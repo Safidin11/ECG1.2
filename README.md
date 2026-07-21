@@ -74,6 +74,20 @@ python3 -m venv .venv
 Внешние модели (felixkrones, ecgtizer, …) ставятся в свои venv в соответствующих
 фазах — см. ниже. Они **намеренно** не в одном окружении с ядром.
 
+### Ядро felixkrones (Фаза 1)
+
+- Окружение: conda-env `ecgdig` (Python 3.11 + torch + nnU-Net), путь прописан в
+  `configs/pipeline.yml → interpreters.segment_calibrate`. Вызывается **подпроцессом**
+  (`python -m src.run.digitize`), обмен через WFDB-файлы, без общих импортов.
+- Веса: M3 (`fold_all/checkpoint_final.pth`, ~453 МБ). На GitHub у репо felixkrones
+  **исчерпан LFS-бюджет**, поэтому веса берутся из локальной копии
+  `~/ECG-Digitiser/models/M3` (симлинк в `external/`), и в `weights/`-политику не
+  попадают. Если у тебя весов нет — их нужно получить из релиза/зеркала проекта.
+- Синтетика в «родном» формате генерируется встроенным `ecg-image-generator`
+  (см. `tools/make_native_wfdb.py` + `tools/gen_native_image.py`).
+- nnU-Net на CPU ≈ 8 мин/картинка, поэтому результат **кэшируется** по содержимому
+  входа (`output/cache/<hash>/`).
+
 ---
 
 ## Запуск
@@ -94,7 +108,7 @@ python3 -m venv .venv
 ## Дорожная карта (фазы)
 
 - **Фаза 0** — каркас: структура, оркестратор, стадии-заглушки (passthrough). ✅
-- **Фаза 1** — ядро felixkrones/ECG-Digitiser (segment + calibrate), прогон на синтетике.
+- **Фаза 1** — ядро felixkrones/ECG-Digitiser (segment + calibrate), прогон на синтетике. ✅
 - **Фаза 2** — OpenCV-препроцессор реального фото (перспектива, тени, обрезка).
 - **Фаза 3** — шаблоны раскладок отведений (Open-ECG-Digitizer).
 - **Фаза 4** — достройка отведений до 10с (UMMISCO/ecgtizer).

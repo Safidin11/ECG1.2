@@ -20,6 +20,10 @@ weights/
 output/
 *.log
 
+# Производные выходы демо (регенерируются; исходники-фикстуры оставляем)
+data/samples/native_out/
+data/samples/native_input/
+
 # Крупные бинарники моделей
 *.pth
 *.pt

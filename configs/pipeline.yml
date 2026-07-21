@@ -11,9 +11,9 @@ project:
 # Интерпретаторы Python. Внешние модели подключаются как ИЗОЛИРОВАННЫЕ
 # подпроцессы, каждый со своим venv (заполняется в соответствующих фазах).
 interpreters:
-  core: .venv/bin/python                          # оркестратор + preprocess (numpy/cv2/yaml/matplotlib)
-  # segment_calibrate: external/ECG-Digitiser/.venv/bin/python   # Фаза 1
-  # reconstruct:       external/ecgtizer/.venv/bin/python        # Фаза 4
+  core: .venv/bin/python                          # оркестратор + preprocess (numpy/cv2/yaml/matplotlib/wfdb)
+  segment_calibrate: /opt/anaconda3/envs/ecgdig/bin/python   # Фаза 1: ядро felixkrones (py3.11+torch+nnU-Net)
+  # reconstruct:       external/ecgtizer/.venv/bin/python     # Фаза 4
 
 # Стадии выполняются в этом порядке. enabled: false -> стадия пропускается
 # (мягкая деградация, вход прокидывается дальше без изменений).
@@ -32,7 +32,11 @@ stages:
   - name: segment
     module: segment
     enabled: true
-    params: {}
+    params:
+      # Ядро felixkrones/ECG-Digitiser вызывается подпроцессом (venv ecgdig).
+      repo_dir: external/ECG-Digitiser
+      model_path: external/ECG-Digitiser/models/M3   # веса M3 (fold_all), симлинк на реальные
+      reuse_cache: true                              # nnU-Net ~8мин/картинка на CPU — кэшируем
 
   - name: calibrate
     module: calibrate
