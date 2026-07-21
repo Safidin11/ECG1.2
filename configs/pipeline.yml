@@ -1,0 +1,55 @@
+# ==========================================================================
+# ECG1.2 — конфигурация гибридного пайплайна дигитизации ЭКГ
+# Learning/demo-инструмент. НЕ медицинское изделие.
+# ==========================================================================
+
+project:
+  name: ECG1.2
+  # Куда складывать артефакты каждого запуска (gitignored).
+  work_dir: output/runs
+
+# Интерпретаторы Python. Внешние модели подключаются как ИЗОЛИРОВАННЫЕ
+# подпроцессы, каждый со своим venv (заполняется в соответствующих фазах).
+interpreters:
+  core: .venv/bin/python                          # оркестратор + preprocess (numpy/cv2/yaml/matplotlib)
+  # segment_calibrate: external/ECG-Digitiser/.venv/bin/python   # Фаза 1
+  # reconstruct:       external/ecgtizer/.venv/bin/python        # Фаза 4
+
+# Стадии выполняются в этом порядке. enabled: false -> стадия пропускается
+# (мягкая деградация, вход прокидывается дальше без изменений).
+# module: имя пакета в src/, экспортирующего run(input_path, config) -> output_path
+stages:
+  - name: preprocess
+    module: preprocess
+    enabled: true
+    params: {}
+
+  - name: layout
+    module: layout
+    enabled: true
+    params: {}
+
+  - name: segment
+    module: segment
+    enabled: true
+    params: {}
+
+  - name: calibrate
+    module: calibrate
+    enabled: true
+    params: {}
+
+  - name: vectorize
+    module: vectorize
+    enabled: true
+    params: {}
+
+  - name: reconstruct
+    module: reconstruct
+    enabled: true
+    params: {}
+
+  - name: output
+    module: output
+    enabled: true
+    params: {}
