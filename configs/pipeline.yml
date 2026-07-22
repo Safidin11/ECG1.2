@@ -22,7 +22,9 @@ stages:
   - name: preprocess
     module: preprocess
     enabled: true
-    params: {}
+    params:
+      target_width: 2200    # апскейл под разрешение, на котором обучен nnU-Net
+      perspective: true     # детекция 4 углов листа + warpPerspective
 
   - name: layout
     module: layout

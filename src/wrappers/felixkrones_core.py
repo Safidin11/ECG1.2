@@ -44,14 +44,19 @@ def _cache_key(image_path: Path, model_path: str) -> str:
 
 
 def _run_digitize(interpreter: str, repo_dir: Path, model_abs: Path,
-                  input_dir: Path, out_dir: Path, log_file: Path) -> None:
-    """Запустить digitize.py как подпроцесс в окружении ecgdig, cwd=repo_dir."""
+                  input_dir: Path, out_dir: Path, log_file: Path,
+                  driver: Path) -> None:
+    """Запустить ядро как подпроцесс в окружении ecgdig, cwd=repo_dir.
+
+    Используем наш безопасный драйвер (tools/felixkrones_safe_digitize.py),
+    который переиспользует функции ядра, но не обнуляет картинку при NaN-угле
+    Hough (частая беда на реальных сканах). Их код при этом не изменён.
+    """
     cmd = [
-        interpreter, "-m", "src.run.digitize",
+        interpreter, str(driver),
         "-d", str(input_dir),
         "-m", str(model_abs),
         "-o", str(out_dir),
-        "--show_image", "-v",
     ]
     env = dict(os.environ)
     # nnUNetv2_predict должен быть на PATH (лежит рядом с интерпретатором ecgdig)
@@ -100,8 +105,9 @@ def run_core(image_path: str, out_stage_dir: str, config: dict) -> dict:
         input_dir.mkdir(parents=True, exist_ok=True)
         core_out.mkdir(parents=True, exist_ok=True)
         shutil.copy2(image_path, input_dir / image_path.name)
+        driver = repo_root / "tools" / "felixkrones_safe_digitize.py"
         _run_digitize(interpreter, repo_dir, model_abs, input_dir, core_out,
-                      cache_dir / "digitize.log")
+                      cache_dir / "digitize.log", driver)
 
     # --- Чтение результата (WFDB) ---
     rec = wfdb.rdrecord(str(core_out / record))

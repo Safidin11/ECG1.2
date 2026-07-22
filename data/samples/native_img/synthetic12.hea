@@ -1,13 +1,13 @@
 synthetic12 12 500 5000
-synthetic12.dat 16 1000.0(0)/mV 16 0 -15 48916 0 I
-synthetic12.dat 16 1000.0(0)/mV 16 0 16 4121 0 II
-synthetic12.dat 16 1000.0(0)/mV 16 0 37 8816 0 III
-synthetic12.dat 16 1000.0(0)/mV 16 0 21 59132 0 aVR
-synthetic12.dat 16 1000.0(0)/mV 16 0 29 15432 0 aVL
-synthetic12.dat 16 1000.0(0)/mV 16 0 -1 1709 0 aVF
-synthetic12.dat 16 1000.0(0)/mV 16 0 21 35933 0 V1
-synthetic12.dat 16 1000.0(0)/mV 16 0 -9 39399 0 V2
-synthetic12.dat 16 1000.0(0)/mV 16 0 12 38236 0 V3
-synthetic12.dat 16 1000.0(0)/mV 16 0 14 14837 0 V4
-synthetic12.dat 16 1000.0(0)/mV 16 0 28 10885 0 V5
-synthetic12.dat 16 1000.0(0)/mV 16 0 -16 21699 0 V6
+synthetic12.dat 16 1000.0(0)/mV 16 0 -6 38202 0 I
+synthetic12.dat 16 1000.0(0)/mV 16 0 -22 8782 0 II
+synthetic12.dat 16 1000.0(0)/mV 16 0 30 7723 0 III
+synthetic12.dat 16 1000.0(0)/mV 16 0 -12 60512 0 aVR
+synthetic12.dat 16 1000.0(0)/mV 16 0 43 34915 0 aVL
+synthetic12.dat 16 1000.0(0)/mV 16 0 32 32894 0 aVF
+synthetic12.dat 16 1000.0(0)/mV 16 0 -27 46498 0 V1
+synthetic12.dat 16 1000.0(0)/mV 16 0 -14 53284 0 V2
+synthetic12.dat 16 1000.0(0)/mV 16 0 16 54810 0 V3
+synthetic12.dat 16 1000.0(0)/mV 16 0 28 17682 0 V4
+synthetic12.dat 16 1000.0(0)/mV 16 0 24 25040 0 V5
+synthetic12.dat 16 1000.0(0)/mV 16 0 40 39619 0 V6
