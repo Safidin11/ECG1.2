@@ -58,6 +58,16 @@ def digitize_one(image_path, model_folder, output_folder, force_angle=None,
 
     # --- дальше их логика дословно ---
     mask_to_use = predict_mask_nnunet(image_rotated, DATASET_NAME, model_folder)
+
+    # Дополнительно сохраняем СЫРУЮ маску nnU-Net (метки 0..12) выровненную с
+    # входной картинкой. Наш пайплайн использует её как бинарную трассу + свою
+    # раскладку (метки felixkrones на реальных фото ненадёжны).
+    import cv2 as _cv2
+    _m = mask_to_use.numpy()
+    if _m.ndim == 3:
+        _m = _m[0]
+    _cv2.imwrite(os.path.join(output_folder, f"{record}_mask.png"), _m.astype(np.uint8))
+
     signal_masks_cropped, signal_positions_cropped, _ = cut_binary(mask_to_use, image_rotated)
 
     x_pixel_list = [v.shape[2] for v in signal_masks_cropped.values() if v is not None]

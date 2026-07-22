@@ -26,19 +26,22 @@ stages:
       target_width: 2200    # апскейл под разрешение, на котором обучен nnU-Net
       perspective: true     # детекция 4 углов листа + warpPerspective
 
-  - name: layout
-    module: layout
-    enabled: true
-    params: {}
-
+  # segment запускается ДО layout: felixkrones (nnU-Net) сегментирует всю
+  # картинку и отдаёт СЫРУЮ маску. Раскладку отведений мы определяем сами по
+  # маске (метки самого nnU-Net на реальных фото ненадёжны — путает отведения).
   - name: segment
     module: segment
     enabled: true
     params:
-      # Ядро felixkrones/ECG-Digitiser вызывается подпроцессом (venv ecgdig).
       repo_dir: external/ECG-Digitiser
       model_path: external/ECG-Digitiser/models/M3   # веса M3 (fold_all), симлинк на реальные
       reuse_cache: true                              # nnU-Net ~8мин/картинка на CPU — кэшируем
+
+  - name: layout
+    module: layout
+    enabled: true
+    params:
+      template: "3x4_rhythm"   # 3 ряда × 4 отведения + ритм-строка (II)
 
   - name: calibrate
     module: calibrate
@@ -48,7 +51,8 @@ stages:
   - name: vectorize
     module: vectorize
     enabled: true
-    params: {}
+    params:
+      clip_mV: 3.0     # клип выбросов от разрывов маски
 
   - name: reconstruct
     module: reconstruct

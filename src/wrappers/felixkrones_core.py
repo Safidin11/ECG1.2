@@ -122,6 +122,12 @@ def run_core(image_path: str, out_stage_dir: str, config: dict) -> dict:
     preview_dst = out_stage_dir / "preview.png"
     if preview_src.exists():
         shutil.copy2(preview_src, preview_dst)
+    # сырая маска nnU-Net (метки 0..12) — для нашей раскладки/векторизации
+    mask_src = core_out / f"{record}_mask.png"
+    mask_dst = out_stage_dir / "mask.png"
+    has_mask = mask_src.exists()
+    if has_mask:
+        shutil.copy2(mask_src, mask_dst)
     # копия WFDB рядом
     for ext in (".hea", ".dat"):
         src = core_out / f"{record}{ext}"
@@ -135,6 +141,8 @@ def run_core(image_path: str, out_stage_dir: str, config: dict) -> dict:
         "wfdb_record": str(out_stage_dir / record),
         "signal_npy": str(signal_npy),
         "preview": str(preview_dst) if preview_src.exists() else None,
+        "mask_png": str(mask_dst) if has_mask else None,
+        "core_ready_image": str(image_path),
         "leads": leads,
         "fs": fs,
         "n_samples": int(signal.shape[0]),
