@@ -40,10 +40,20 @@ def run(input_path: str, config: dict) -> str:
         adc_gain=[1000.0] * p_signal.shape[1], baseline=[0] * p_signal.shape[1],
     )
 
-    # финальное превью
+    # финальное превью (график по стадиям)
     final_preview = out_dir / "preview.png"
     if manifest.get("preview") and Path(manifest["preview"]).exists():
         shutil.copy2(manifest["preview"], final_preview)
+
+    # цифровая ЭКГ на «миллиметровке» из реконструированного сигнала
+    digital_ecg = out_dir / "digital_ecg.png"
+    try:
+        sys.path.insert(0, str(Path(config["_repo_root"]) / "tools"))
+        from render_digital_ecg import render  # noqa: E402
+        render(manifest["signal_npy"], str(digital_ecg), fs=fs)
+        manifest["digital_ecg"] = str(digital_ecg)
+    except Exception as exc:  # рендер не критичен для пайплайна
+        log.warning("STAGE %s: не удалось отрисовать цифровую ЭКГ: %s", STAGE, exc)
 
     manifest["wfdb_record"] = str(out_dir / record)
     manifest["final_preview"] = str(final_preview)
