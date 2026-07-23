@@ -27,7 +27,30 @@ STAGE = "vectorize"
 log = get_logger(STAGE)
 
 LEAD_ORDER = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-SLEW_PX = 70   # макс. скачок трассы за столбец (px) — против «прямоугольников»
+SLEW_PX = 70          # макс. скачок трассы за столбец (px) — против «прямоугольников»
+TEXT_DILATE_PX = 21   # окрестность маски, в которой оставляем чернила (убираем надписи)
+TEXT_MIN_RATIO = 0.5  # если маска слишком разрежена — не чистим (fallback на сырьё)
+
+
+def _suppress_text(ink, mask, bboxes):
+    """Убрать надписи («1cm/mV», метки) из чернил, оставив трассу.
+
+    Надписи есть в цветовых чернилах, но их НЕТ в маске nnU-Net (она сегментирует
+    только кривую). Поэтому в каждой клетке оставляем чернила рядом с маской
+    (dilate). Где маска слишком разрежена (мало покрытия) — не трогаем клетку,
+    чтобы не потерять трассу (fallback на сырые чернила).
+    """
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (TEXT_DILATE_PX, TEXT_DILATE_PX))
+    out = ink.copy()
+    for (x0, y0, x1, y1) in bboxes:
+        ic = ink[y0:y1, x0:x1]
+        tot = int(ic.sum())
+        if tot == 0:
+            continue
+        cl = ic * cv2.dilate(mask[y0:y1, x0:x1], ker)
+        if cl.sum() >= TEXT_MIN_RATIO * tot:
+            out[y0:y1, x0:x1] = cl
+    return out
 
 
 def _clusters(colpix):
@@ -101,8 +124,15 @@ def run(input_path: str, config: dict) -> str:
         return str(out_path)
 
     core_img = manifest.get("core_ready_image")
-    ink = color_ink(cv2.imread(core_img)) if core_img and Path(core_img).exists() else \
-        (cv2.imread(manifest["mask_png"], cv2.IMREAD_UNCHANGED) > 0).astype(np.uint8)
+    mask = (cv2.imread(manifest["mask_png"], cv2.IMREAD_UNCHANGED) > 0).astype(np.uint8) \
+        if manifest.get("mask_png") else None
+    ink = color_ink(cv2.imread(core_img)) if core_img and Path(core_img).exists() else mask
+    # Подавление надписей по маске (там, где маска достаточно плотная)
+    if mask is not None and ink is not None:
+        bboxes = [tuple(c["bbox"]) for c in layout["cells"].values()]
+        if layout.get("rhythm"):
+            bboxes.append(tuple(layout["rhythm"]["bbox"]))
+        ink = _suppress_text(ink, mask, bboxes)
     mm_px = layout["mm_per_px"]
     fs = manifest.get("fs", 500)
     n_full = int(fs * 10)
