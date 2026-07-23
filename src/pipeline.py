@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import importlib
+import re
 import sys
 from pathlib import Path
 
@@ -42,10 +43,21 @@ def load_config(config_path: str) -> dict:
     return cfg
 
 
+_RUN_RE = re.compile(r"^\d{8}_\d{6}_(\d{3})$")
+
+
 def make_run_dir(cfg: dict) -> Path:
+    """Каталог запуска в формате ГГГГММДД_ЧЧММСС_ННН (ННН — сквозной номер).
+
+    Номер = max существующего +1 (нумерация с 001; старые run_* игнорируются).
+    """
     work_dir = REPO_ROOT / cfg.get("project", {}).get("work_dir", "output/runs")
-    stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = work_dir / f"run_{stamp}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    nums = [int(m.group(1)) for d in work_dir.iterdir()
+            if d.is_dir() and (m := _RUN_RE.match(d.name))]
+    num = (max(nums) + 1) if nums else 1
+    now = _dt.datetime.now()
+    run_dir = work_dir / f"{now:%Y%m%d}_{now:%H%M%S}_{num:03d}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 

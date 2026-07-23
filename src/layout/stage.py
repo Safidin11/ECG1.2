@@ -25,7 +25,7 @@ import numpy as np
 from scipy.signal import find_peaks
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import get_logger, stage_dir  # noqa: E402
+from common import get_logger, stage_dir, color_ink  # noqa: E402
 
 STAGE = "layout"
 log = get_logger(STAGE)
@@ -36,7 +36,8 @@ TEMPLATE_3x4 = [
     ["III", "aVF", "V3", "V6"],
 ]
 RHYTHM_LEAD = "II"
-WIN_FRAC = 0.72   # доля расстояния до соседней строки, задающая окно поиска
+WIN_FRAC = 0.72     # доля расстояния до соседней строки, задающая окно поиска
+LABEL_TRIM_MM = 6   # обрезка подписи отведения в начале каждой колонки
 
 
 def detect_row_centers(trace: np.ndarray):
@@ -59,9 +60,13 @@ def detect_mm_per_px(gray: np.ndarray) -> float:
     return float(pk[0]) if len(pk) else 8.0
 
 
-def lead_baseline(mask: np.ndarray, x0, x1, lo, hi) -> int:
-    """Своя базовая линия отведения = мода гистограммы y его трассы в окне."""
-    sub = mask[lo:hi, x0:x1]
+def lead_baseline(ink: np.ndarray, x0, x1, lo, hi) -> int:
+    """Своя базовая линия отведения = мода гистограммы y его трассы в окне.
+
+    Считаем по цветовым «чернилам» (плотная трасса без сетки), а не по маске
+    nnU-Net — иначе на разреженной маске мода уезжает на чужую трассу.
+    """
+    sub = ink[lo:hi, x0:x1]
     ys = np.where(sub > 0)[0]
     if len(ys) == 0:
         return (lo + hi) // 2
@@ -84,9 +89,13 @@ def run(input_path: str, config: dict) -> str:
 
     mask = (cv2.imread(mask_png, cv2.IMREAD_UNCHANGED) > 0).astype(np.uint8)
     core_img = manifest.get("core_ready_image")
-    gray = cv2.cvtColor(cv2.imread(core_img), cv2.COLOR_BGR2GRAY) if core_img and Path(core_img).exists() else (1 - mask) * 255
+    bgr = cv2.imread(core_img) if core_img and Path(core_img).exists() else None
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY) if bgr is not None else (1 - mask) * 255
+    ink = color_ink(bgr) if bgr is not None else mask   # плотная трасса без сетки
     H, W = mask.shape
 
+    # Строки ищем по МАСКЕ (в ней нет текста -> проекция чистая),
+    # а базовую линию/трассу берём из цветовых чернил (плотнее).
     centers = detect_row_centers(mask)
     if len(centers) < 4:
         raise RuntimeError(f"layout: найдено строк {len(centers)} (< 4)")
@@ -95,9 +104,12 @@ def run(input_path: str, config: dict) -> str:
     xs = np.where(mask.any(0))[0]
     xL, xR = int(xs.min()), int(xs.max())
     cal_trim = int(14 * mm_px)
+    label_trim = int(LABEL_TRIM_MM * mm_px)
     colw = (xR - xL) / 4.0
     columns = [[int(xL + c * colw), int(xL + (c + 1) * colw)] for c in range(4)]
-    columns[0][0] += cal_trim
+    columns[0][0] += cal_trim                      # калибр-импульс в 1-й колонке
+    for c in (1, 2, 3):
+        columns[c][0] += label_trim                # подпись отведения в начале колонки
 
     block_centers = centers[:3]
     rhy_center = centers[3]
@@ -110,12 +122,12 @@ def run(input_path: str, config: dict) -> str:
         whi = min(H, int(center + WIN_FRAC * dn))
         for c, (x0, x1) in enumerate(columns):
             lead = TEMPLATE_3x4[r][c]
-            base = lead_baseline(mask, x0, x1, wlo, whi)
+            base = lead_baseline(ink, x0, x1, wlo, whi)
             cells[lead] = {"row": r, "col": c, "bbox": [x0, wlo, x1, whi],
                            "baseline": base, "seconds": 2.5}
     # ритм: своё окно вниз до края листа
     r_wlo = max(0, int(rhy_center - WIN_FRAC * (rhy_center - block_centers[2])))
-    r_base = lead_baseline(mask, xL + cal_trim, xR, r_wlo, H)
+    r_base = lead_baseline(ink, xL + cal_trim, xR, r_wlo, H)
     rhythm_cell = {"lead": RHYTHM_LEAD, "bbox": [xL + cal_trim, r_wlo, xR, H],
                    "baseline": r_base, "seconds": 10.0}
 

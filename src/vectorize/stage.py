@@ -21,50 +21,50 @@ import numpy as np
 from scipy.ndimage import median_filter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import get_logger, stage_dir  # noqa: E402
+from common import get_logger, stage_dir, color_ink  # noqa: E402
 
 STAGE = "vectorize"
 log = get_logger(STAGE)
 
 LEAD_ORDER = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
-DARK = 110   # порог «чернил» в полутоне (после deshadow сетка светлее)
+SLEW_PX = 70   # макс. скачок трассы за столбец (px) — против «прямоугольников»
 
 
 def _clusters(colpix):
-    """Центроиды подряд идущих ненулевых пикселей столбца."""
+    """Кластеры подряд идущих ненулевых пикселей столбца -> (центроид, высота)."""
     ys = np.where(colpix > 0)[0]
     if len(ys) == 0:
         return []
     out, start, prev = [], ys[0], ys[0]
     for y in ys[1:]:
         if y - prev > 3:
-            out.append((start + prev) / 2)
+            out.append(((start + prev) / 2, prev - start + 1))
             start = y
         prev = y
-    out.append((start + prev) / 2)
+    out.append(((start + prev) / 2, prev - start + 1))
     return out
 
 
-def _trace_follow(mask, gray, bbox, baseline):
-    """Трассировка отведения следованием за ближайшим кластером. -> (ys, cov)."""
+def _trace_follow(ink, bbox, baseline):
+    """Трассировка отведения по цветовым чернилам следованием за кластером.
+
+    В каждом столбце берём кластер, ближайший к текущей траектории (при равенстве
+    — тоньше, чтобы не липнуть к разделителю/тексту). Скачок > SLEW_PX запрещён
+    (иначе трасса «проваливается» в глубокий S/шум прямоугольником). Разрывы
+    интерполируем и продолжаем.
+    """
     x0, y0, x1, y1 = bbox
     n = x1 - x0
-    winh = y1 - y0
     ys = np.full(n, np.nan)
     prev = baseline - y0
     for i in range(n):
-        cl = _clusters(mask[y0:y1, x0 + i])
-        if not cl and gray is not None:
-            g = gray[y0:y1, x0 + i]
-            lo = max(0, int(prev) - 40)
-            hi = min(winh, int(prev) + 40)
-            dark = np.where(g[lo:hi] < DARK)[0]
-            if len(dark):
-                cl = [lo + dark.mean()]
-        if cl:
-            y = min(cl, key=lambda c: abs(c - prev))   # ближайший к траектории
-            ys[i] = y
-            prev = y
+        cl = _clusters(ink[y0:y1, x0 + i])
+        if not cl:
+            continue
+        c, _h = min(cl, key=lambda t: (abs(t[0] - prev), t[1]))
+        if abs(c - prev) <= SLEW_PX:
+            ys[i] = c
+            prev = c
     idx = np.arange(n)
     good = ~np.isnan(ys)
     if good.sum() < 5:
@@ -100,23 +100,23 @@ def run(input_path: str, config: dict) -> str:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
         return str(out_path)
 
-    mask = (cv2.imread(manifest["mask_png"], cv2.IMREAD_UNCHANGED) > 0).astype(np.uint8)
     core_img = manifest.get("core_ready_image")
-    gray = cv2.cvtColor(cv2.imread(core_img), cv2.COLOR_BGR2GRAY) if core_img and Path(core_img).exists() else None
+    ink = color_ink(cv2.imread(core_img)) if core_img and Path(core_img).exists() else \
+        (cv2.imread(manifest["mask_png"], cv2.IMREAD_UNCHANGED) > 0).astype(np.uint8)
     mm_px = layout["mm_per_px"]
     fs = manifest.get("fs", 500)
     n_full = int(fs * 10)
 
     signals, coverage = {}, {}
     for lead, cell in layout["cells"].items():
-        ys, cov = _trace_follow(mask, gray, cell["bbox"], cell["baseline"])
+        ys, cov = _trace_follow(ink, cell["bbox"], cell["baseline"])
         if ys is not None:
             signals[lead] = _to_mv(ys, mm_px, cell["seconds"], fs, clip_mV)
             coverage[lead] = round(cov, 3)
     rhythm_sig = None
     rc = layout.get("rhythm")
     if rc:
-        ys, rcov = _trace_follow(mask, gray, rc["bbox"], rc["baseline"])
+        ys, rcov = _trace_follow(ink, rc["bbox"], rc["baseline"])
         if ys is not None:
             rhythm_sig = _to_mv(ys, mm_px, rc["seconds"], fs, clip_mV)
             coverage["II_rhythm"] = round(rcov, 3)

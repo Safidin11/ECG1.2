@@ -12,6 +12,9 @@ import logging
 import shutil
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(name)-11s | %(message)s",
@@ -29,6 +32,18 @@ def stage_dir(config: dict, stage: str) -> Path:
     d = run_dir / stage
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def color_ink(bgr: np.ndarray, thr: int = 130) -> np.ndarray:
+    """Извлечь «чернила» ЭКГ по цвету: тёмные во ВСЕХ каналах (чёрная трасса).
+
+    Розовая/красная сетка имеет высокий R и отсекается — это устойчивее
+    полутонового порога (который ловит яркую сетку и даёт заусенцы). Возвращает
+    бинарную маску трассы (uint8 0/1). Текст-подписи чёрные и сюда тоже попадают —
+    их обрезаем по геометрии колонок в стадии layout.
+    """
+    b, g, r = cv2.split(bgr)
+    return ((b < thr) & (g < thr) & (r < thr)).astype(np.uint8)
 
 
 def passthrough(input_path: str, config: dict, stage: str) -> str:
