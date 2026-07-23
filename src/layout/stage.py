@@ -41,37 +41,56 @@ def load_layouts():
     return cfg.get("paper_seconds", 10), cfg.get("layouts", {})
 
 
-def detect_row_centers(trace: np.ndarray, n: int | None = None, thr: float = 0.2):
-    """Центры строк по маске через ПОЛОСЫ порога.
+def coverage_profile(ink: np.ndarray) -> np.ndarray:
+    """Профиль ПОКРЫТИЯ по строкам (доля колонок с чернилами), сглаженный [0..1].
 
-    Сильно сглаженная проекция маски -> бинаризация по порогу -> число связных
-    полос = число строк, центр = максимум внутри полосы. Устойчиво к вторичным
-    пикам от QRS (счёт по пикам их дробит). Если n задано и полос не n —
-    откат на n сильнейших пиков.
+    По цветовым чернилам (плотные, без сетки) — работает и на бледных фото, где
+    маска nnU-Net разрежена. Базовая (изоэлектрическая) линия каждой строки даёт
+    самый заметный пик покрытия.
     """
-    H, W = trace.shape
-    prof = cv2.blur(trace.sum(1).astype(np.float32).reshape(-1, 1),
-                    (1, max(15, H // 25))).ravel()
-    if prof.max() <= 0:
+    H = ink.shape[0]
+    cov = cv2.blur(ink.mean(1).astype(np.float32).reshape(-1, 1), (1, max(7, H // 90))).ravel()
+    m = cov.max()
+    return cov / m if m > 0 else cov
+
+
+def _refine(cov, y, win):
+    lo = max(0, int(y - win))
+    hi = min(len(cov), int(y + win))
+    return lo + int(np.argmax(cov[lo:hi])) if hi > lo else int(y)
+
+
+def detect_row_centers(cov: np.ndarray, R: int):
+    """Ровно R центров строк: R равномерных позиций, уточнённых к максимуму покрытия."""
+    ys = np.where(cov > 0.15)[0]
+    if len(ys) == 0:
         return []
-    prof = prof / prof.max()
-    band = prof > thr
-    centers, i = [], 0
-    while i < H:
-        if band[i]:
-            j = i
-            while j < H and band[j]:
-                j += 1
-            centers.append(i + int(np.argmax(prof[i:j])))
-            i = j
-        else:
-            i += 1
-    if n is not None and len(centers) != n:
-        pk, props = find_peaks(prof, distance=max(5, int(0.5 * H / n)), height=0.12)
-        if len(pk) >= n:
-            keep = np.argsort(props["peak_heights"])[::-1][:n]
-            centers = sorted(int(pk[k]) for k in keep)
-    return sorted(centers)
+    yT, yB = int(ys.min()), int(ys.max())
+    sp = (yB - yT) / R
+    centers = sorted(set(_refine(cov, yT + sp * (i + 0.5), sp * 0.4) for i in range(R)))
+    return centers
+
+
+def score_layout(cov: np.ndarray, R: int) -> float:
+    """Насколько хорошо R строк объясняют профиль покрытия (больше — лучше).
+
+    on  — среднее покрытие на найденных строках;
+    off — макс. покрытие в СЕРЕДИНЕ промежутков (там строки быть не должно);
+    reg — неравномерность шага (у правильного R строки равномерны).
+    """
+    centers = detect_row_centers(cov, R)
+    if len(centers) < R:
+        return -1.0                      # рефайн схлопнул центры -> R завышен
+    on = float(np.mean([cov[c] for c in centers]))
+    offs = []
+    for i in range(len(centers) - 1):
+        a, b = centers[i], centers[i + 1]
+        q = (b - a) // 4
+        offs.append(float(cov[a + q:b - q].max()) if b - q > a + q else float(cov[(a + b) // 2]))
+    off = float(np.mean(offs)) if offs else 0.0
+    spac = np.diff(centers)
+    reg = float(np.std(spac) / (np.mean(spac) + 1e-6))
+    return (on - off) - 0.6 * reg
 
 
 def detect_mm_per_px(gray: np.ndarray) -> float:
@@ -93,17 +112,26 @@ def lead_baseline(ink: np.ndarray, x0, x1, lo, hi) -> int:
     return lo + int(np.argmax(h) * 2)
 
 
-def _pick_template(name, layouts, mask):
-    """Выбрать шаблон: явно по имени или авто по числу строк маски."""
+def _pick_template(name, layouts, cov):
+    """Выбрать шаблон: явно по имени или авто по фит-скорингу покрытия.
+
+    Авто: перебираем шаблоны, выбираем тот, чьё число строк лучше всего
+    объясняет профиль покрытия (score_layout). Устойчиво к разным форматам
+    (3×4, 6×2, 12×1) и к высоким QRS / шапке.
+    """
     if name and name != "auto":
         if name not in layouts:
             raise RuntimeError(f"layout: шаблон '{name}' не найден в lead_layouts.yml")
         return name, layouts[name]
-    n_rows = len(detect_row_centers(mask))          # авто: сколько строк видно
+    best, best_score = None, -1e9
     for tname, tpl in layouts.items():
-        if len(tpl["grid"]) == n_rows:
-            return tname, tpl
-    raise RuntimeError(f"layout: не нашёл шаблон под {n_rows} строк (auto)")
+        s = score_layout(cov, len(tpl["grid"]))
+        log.info("STAGE %s: авто-скоринг %s (%d строк) = %.3f", STAGE, tname, len(tpl["grid"]), s)
+        if s > best_score:
+            best, best_score = (tname, tpl), s
+    if best is None:
+        raise RuntimeError("layout: не удалось подобрать шаблон (auto)")
+    return best
 
 
 def run(input_path: str, config: dict) -> str:
@@ -111,34 +139,35 @@ def run(input_path: str, config: dict) -> str:
     with open(input_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
 
-    mask_png = manifest.get("mask_png")
-    if not mask_png or not Path(mask_png).exists():
-        log.warning("STAGE %s: нет маски — пропуск раскладки (fallback к сигналу ядра)", STAGE)
+    # Раскладку строим по ЦВЕТОВЫМ ЧЕРНИЛАМ core_ready (плотные, без сетки;
+    # работают и на бледных фото, где маска nnU-Net разрежена). Маска опциональна.
+    core_img = manifest.get("core_ready_image")
+    if not core_img or not Path(core_img).exists():
+        log.warning("STAGE %s: нет core_ready — пропуск раскладки (fallback к сигналу ядра)", STAGE)
         out_path = out_dir / "layout.json"
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
         return str(out_path)
 
-    mask = (cv2.imread(mask_png, cv2.IMREAD_UNCHANGED) > 0).astype(np.uint8)
-    core_img = manifest.get("core_ready_image")
-    bgr = cv2.imread(core_img) if core_img and Path(core_img).exists() else None
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY) if bgr is not None else (1 - mask) * 255
-    ink = color_ink(bgr) if bgr is not None else mask
-    H, W = mask.shape
+    bgr = cv2.imread(core_img)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    ink = color_ink(bgr)
+    H, W = ink.shape
+    cov = coverage_profile(ink)
 
     paper_sec, layouts = load_layouts()
     tname, tpl = _pick_template(config.get("_stage_params", {}).get("template", "auto"),
-                                layouts, mask)
+                                layouts, cov)
     grid = tpl["grid"]
     cols = tpl["cols"]
     R = len(grid)
 
-    centers = detect_row_centers(mask, R)
+    centers = detect_row_centers(cov, R)
     if len(centers) < R:
         raise RuntimeError(f"layout: нашёл строк {len(centers)} < {R} (шаблон {tname})")
     mm_px = detect_mm_per_px(gray)
 
-    xs = np.where(mask.any(0))[0]
+    xs = np.where(ink.any(0))[0]
     xL, xR = int(xs.min()), int(xs.max())
     cal_trim = int(CAL_TRIM_MM * mm_px)
     label_trim = int(LABEL_TRIM_MM * mm_px)
@@ -155,7 +184,7 @@ def run(input_path: str, config: dict) -> str:
         wlo = max(0, int(center - WIN_FRAC * up))
         whi = min(H, int(center + WIN_FRAC * dn))
         row = grid[r]
-        if all(l == row[0] for l in row):           # ритм-строка на всю ширину
+        if cols > 1 and all(l == row[0] for l in row):   # ритм-строка на всю ширину
             base = lead_baseline(ink, xL + cal_trim, xR, wlo, whi)
             rhythm_strips.append({"lead": row[0], "bbox": [xL + cal_trim, wlo, xR, whi],
                                   "baseline": base, "seconds": paper_sec})
