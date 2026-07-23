@@ -45,12 +45,14 @@ def run(input_path: str, config: dict) -> str:
     if manifest.get("preview") and Path(manifest["preview"]).exists():
         shutil.copy2(manifest["preview"], final_preview)
 
-    # цифровая ЭКГ на «миллиметровке» из реконструированного сигнала
+    # цифровая ЭКГ на «миллиметровке» в ИСХОДНОЙ раскладке (grid из layout)
     digital_ecg = out_dir / "digital_ecg.png"
     try:
         sys.path.insert(0, str(Path(config["_repo_root"]) / "tools"))
         from render_digital_ecg import render  # noqa: E402
-        render(manifest["signal_npy"], str(digital_ecg), fs=fs)
+        lay = manifest.get("layout") or {}
+        render(manifest["signal_npy"], str(digital_ecg), fs=fs,
+               grid=lay.get("grid"), cols=lay.get("cols"))
         manifest["digital_ecg"] = str(digital_ecg)
     except Exception as exc:  # рендер не критичен для пайплайна
         log.warning("STAGE %s: не удалось отрисовать цифровую ЭКГ: %s", STAGE, exc)

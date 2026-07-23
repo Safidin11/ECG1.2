@@ -199,6 +199,7 @@ def run(input_path: str, config: dict) -> str:
     manifest["layout"] = {
         "template": tname,
         "cols": cols,
+        "grid": grid,                 # раскладка для рендера в исходном виде
         "mm_per_px": mm_px,
         "cal_trim_px": cal_trim,
         "content_x": [xL, xR],
