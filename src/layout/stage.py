@@ -1,20 +1,18 @@
-"""Стадия layout: НЕЗАВИСИМАЯ локализация каждого отведения по маске.
+"""Стадия layout: шаблонно-управляемая локализация отведений.
 
-Почему по нашей раскладке, а не по меткам nnU-Net: модель присваивает
-отведение по абсолютной позиции на своей синтетической странице и на реальных
-фото путает, какое отведение где. Маску берём как «где чернила», а раскладку
-3×4+ритм назначаем сами.
+Раскладка больше не захардкожена: шаблоны описаны в configs/lead_layouts.yml
+(схема как у Ahus-AIM/Open-ECG-Digitizer — grid из строк, строка с одинаковыми
+отведениями = ритм-строка). Поддерживаются 3×4+ритм, 6×2+ритм, 12×1 и др.
 
-КАЖДОЕ отведение локализуется независимо (важно для форматов, где соседние
-отведения одной строки стоят на РАЗНОЙ высоте):
-  * строки находим по проекции маски (4 центра);
-  * колонки — 4 доли контента (калибр-импульс слева обрезаем);
-  * для каждой клетки считаем СВОЁ окно поиска (центр строки ± доля до соседней
-    строки — соседи не мешают) и СВОЮ базовую линию (мода гистограммы y трассы).
-Ритм-строка локализуется отдельно, с окном вниз до края листа.
+Выбор шаблона: params.template = "auto" (по числу строк) или имя шаблона.
+Число строк определяем по маске nnU-Net (в ней нет текста → проекция чистая),
+а базовую линию/трассу берём из цветовых чернил (плотные, без сетки).
+
+КАЖДОЕ отведение локализуется независимо: своё окно (центр строки ± доля до
+соседней строки) и своя базовая линия (мода гистограммы y). Соседи не влияют.
 
 Вход:  segment.json (mask_png, core_ready_image).
-Выход: layout.json (+ блок 'layout' с per-lead window/baseline) + overlay.png.
+Выход: layout.json (+ блок 'layout': cells, rhythm_strips, cols, ...) + overlay.png.
 """
 import json
 import sys
@@ -22,6 +20,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import yaml
 from scipy.signal import find_peaks
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -30,24 +29,49 @@ from common import get_logger, stage_dir, color_ink  # noqa: E402
 STAGE = "layout"
 log = get_logger(STAGE)
 
-TEMPLATE_3x4 = [
-    ["I", "aVR", "V1", "V4"],
-    ["II", "aVL", "V2", "V5"],
-    ["III", "aVF", "V3", "V6"],
-]
-RHYTHM_LEAD = "II"
 WIN_FRAC = 0.72     # доля расстояния до соседней строки, задающая окно поиска
 LABEL_TRIM_MM = 6   # обрезка подписи отведения в начале каждой колонки
+CAL_TRIM_MM = 14    # обрезка калибр-импульса в 1-й колонке
+LAYOUTS_CFG = Path(__file__).resolve().parent.parent.parent / "configs" / "lead_layouts.yml"
 
 
-def detect_row_centers(trace: np.ndarray):
+def load_layouts():
+    with open(LAYOUTS_CFG, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    return cfg.get("paper_seconds", 10), cfg.get("layouts", {})
+
+
+def detect_row_centers(trace: np.ndarray, n: int | None = None, thr: float = 0.2):
+    """Центры строк по маске через ПОЛОСЫ порога.
+
+    Сильно сглаженная проекция маски -> бинаризация по порогу -> число связных
+    полос = число строк, центр = максимум внутри полосы. Устойчиво к вторичным
+    пикам от QRS (счёт по пикам их дробит). Если n задано и полос не n —
+    откат на n сильнейших пиков.
+    """
     H, W = trace.shape
     prof = cv2.blur(trace.sum(1).astype(np.float32).reshape(-1, 1),
-                    (1, max(9, H // 40))).ravel()
-    pk, _ = find_peaks(prof, distance=H // 8, height=prof.max() * 0.15)
-    if len(pk) > 4:
-        pk = pk[np.argsort(prof[pk])[::-1][:4]]
-    return sorted(int(p) for p in pk)
+                    (1, max(15, H // 25))).ravel()
+    if prof.max() <= 0:
+        return []
+    prof = prof / prof.max()
+    band = prof > thr
+    centers, i = [], 0
+    while i < H:
+        if band[i]:
+            j = i
+            while j < H and band[j]:
+                j += 1
+            centers.append(i + int(np.argmax(prof[i:j])))
+            i = j
+        else:
+            i += 1
+    if n is not None and len(centers) != n:
+        pk, props = find_peaks(prof, distance=max(5, int(0.5 * H / n)), height=0.12)
+        if len(pk) >= n:
+            keep = np.argsort(props["peak_heights"])[::-1][:n]
+            centers = sorted(int(pk[k]) for k in keep)
+    return sorted(centers)
 
 
 def detect_mm_per_px(gray: np.ndarray) -> float:
@@ -61,17 +85,25 @@ def detect_mm_per_px(gray: np.ndarray) -> float:
 
 
 def lead_baseline(ink: np.ndarray, x0, x1, lo, hi) -> int:
-    """Своя базовая линия отведения = мода гистограммы y его трассы в окне.
-
-    Считаем по цветовым «чернилам» (плотная трасса без сетки), а не по маске
-    nnU-Net — иначе на разреженной маске мода уезжает на чужую трассу.
-    """
-    sub = ink[lo:hi, x0:x1]
-    ys = np.where(sub > 0)[0]
+    """Своя базовая линия отведения = мода гистограммы y его трассы (по чернилам)."""
+    ys = np.where(ink[lo:hi, x0:x1] > 0)[0]
     if len(ys) == 0:
         return (lo + hi) // 2
     h, _ = np.histogram(ys, bins=np.arange(0, hi - lo + 2, 2))
     return lo + int(np.argmax(h) * 2)
+
+
+def _pick_template(name, layouts, mask):
+    """Выбрать шаблон: явно по имени или авто по числу строк маски."""
+    if name and name != "auto":
+        if name not in layouts:
+            raise RuntimeError(f"layout: шаблон '{name}' не найден в lead_layouts.yml")
+        return name, layouts[name]
+    n_rows = len(detect_row_centers(mask))          # авто: сколько строк видно
+    for tname, tpl in layouts.items():
+        if len(tpl["grid"]) == n_rows:
+            return tname, tpl
+    raise RuntimeError(f"layout: не нашёл шаблон под {n_rows} строк (auto)")
 
 
 def run(input_path: str, config: dict) -> str:
@@ -91,72 +123,79 @@ def run(input_path: str, config: dict) -> str:
     core_img = manifest.get("core_ready_image")
     bgr = cv2.imread(core_img) if core_img and Path(core_img).exists() else None
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY) if bgr is not None else (1 - mask) * 255
-    ink = color_ink(bgr) if bgr is not None else mask   # плотная трасса без сетки
+    ink = color_ink(bgr) if bgr is not None else mask
     H, W = mask.shape
 
-    # Строки ищем по МАСКЕ (в ней нет текста -> проекция чистая),
-    # а базовую линию/трассу берём из цветовых чернил (плотнее).
-    centers = detect_row_centers(mask)
-    if len(centers) < 4:
-        raise RuntimeError(f"layout: найдено строк {len(centers)} (< 4)")
+    paper_sec, layouts = load_layouts()
+    tname, tpl = _pick_template(config.get("_stage_params", {}).get("template", "auto"),
+                                layouts, mask)
+    grid = tpl["grid"]
+    cols = tpl["cols"]
+    R = len(grid)
+
+    centers = detect_row_centers(mask, R)
+    if len(centers) < R:
+        raise RuntimeError(f"layout: нашёл строк {len(centers)} < {R} (шаблон {tname})")
     mm_px = detect_mm_per_px(gray)
 
     xs = np.where(mask.any(0))[0]
     xL, xR = int(xs.min()), int(xs.max())
-    cal_trim = int(14 * mm_px)
+    cal_trim = int(CAL_TRIM_MM * mm_px)
     label_trim = int(LABEL_TRIM_MM * mm_px)
-    colw = (xR - xL) / 4.0
-    columns = [[int(xL + c * colw), int(xL + (c + 1) * colw)] for c in range(4)]
-    columns[0][0] += cal_trim                      # калибр-импульс в 1-й колонке
-    for c in (1, 2, 3):
-        columns[c][0] += label_trim                # подпись отведения в начале колонки
+    colw = (xR - xL) / cols
+    columns = [[int(xL + c * colw), int(xL + (c + 1) * colw)] for c in range(cols)]
+    columns[0][0] += cal_trim
+    for c in range(1, cols):
+        columns[c][0] += label_trim
 
-    block_centers = centers[:3]
-    rhy_center = centers[3]
-
-    cells = {}
-    for r, center in enumerate(block_centers):
-        up = center - (block_centers[r - 1] if r > 0 else 0)
-        dn = (block_centers[r + 1] if r < 2 else rhy_center) - center
+    cells, rhythm_strips = {}, []
+    for r, center in enumerate(centers):
+        up = center - (centers[r - 1] if r > 0 else 0)
+        dn = (centers[r + 1] if r < R - 1 else H) - center
         wlo = max(0, int(center - WIN_FRAC * up))
         whi = min(H, int(center + WIN_FRAC * dn))
-        for c, (x0, x1) in enumerate(columns):
-            lead = TEMPLATE_3x4[r][c]
-            base = lead_baseline(ink, x0, x1, wlo, whi)
-            cells[lead] = {"row": r, "col": c, "bbox": [x0, wlo, x1, whi],
-                           "baseline": base, "seconds": 2.5}
-    # ритм: своё окно вниз до края листа
-    r_wlo = max(0, int(rhy_center - WIN_FRAC * (rhy_center - block_centers[2])))
-    r_base = lead_baseline(ink, xL + cal_trim, xR, r_wlo, H)
-    rhythm_cell = {"lead": RHYTHM_LEAD, "bbox": [xL + cal_trim, r_wlo, xR, H],
-                   "baseline": r_base, "seconds": 10.0}
+        row = grid[r]
+        if all(l == row[0] for l in row):           # ритм-строка на всю ширину
+            base = lead_baseline(ink, xL + cal_trim, xR, wlo, whi)
+            rhythm_strips.append({"lead": row[0], "bbox": [xL + cal_trim, wlo, xR, whi],
+                                  "baseline": base, "seconds": paper_sec})
+        else:                                        # обычная строка блока
+            for c in range(cols):
+                lead = row[c]
+                x0, x1 = columns[c]
+                base = lead_baseline(ink, x0, x1, wlo, whi)
+                cells[lead] = {"row": r, "col": c, "bbox": [x0, wlo, x1, whi],
+                               "baseline": base, "seconds": paper_sec / cols}
 
     manifest["layout"] = {
-        "template": config.get("_stage_params", {}).get("template", "3x4_rhythm"),
+        "template": tname,
+        "cols": cols,
         "mm_per_px": mm_px,
         "cal_trim_px": cal_trim,
         "content_x": [xL, xR],
         "row_centers": centers,
-        "columns": columns,
         "cells": cells,
-        "rhythm": rhythm_cell,
+        "rhythm_strips": rhythm_strips,
     }
 
-    # overlay: окна отведений + базовые линии
-    vis = cv2.imread(core_img) if core_img and Path(core_img).exists() else cv2.cvtColor(mask * 255, cv2.COLOR_GRAY2BGR)
+    # overlay
+    vis = bgr.copy() if bgr is not None else cv2.cvtColor(mask * 255, cv2.COLOR_GRAY2BGR)
     for lead, cell in cells.items():
         x0, y0, x1, y1 = cell["bbox"]
         cv2.rectangle(vis, (x0, y0), (x1, y1), (0, 150, 0), 1)
         cv2.line(vis, (x0, cell["baseline"]), (x1, cell["baseline"]), (255, 120, 0), 1)
         cv2.putText(vis, lead, (x0 + 5, y0 + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-    rx0, ry0, rx1, ry1 = rhythm_cell["bbox"]
-    cv2.rectangle(vis, (rx0, ry0), (rx1, ry1), (200, 0, 0), 1)
-    cv2.line(vis, (rx0, r_base), (rx1, r_base), (255, 120, 0), 1)
+    for rs in rhythm_strips:
+        x0, y0, x1, y1 = rs["bbox"]
+        cv2.rectangle(vis, (x0, y0), (x1, y1), (200, 0, 0), 1)
+        cv2.line(vis, (x0, rs["baseline"]), (x1, rs["baseline"]), (255, 120, 0), 1)
+        cv2.putText(vis, rs["lead"] + " (rhythm)", (x0 + 5, y0 + 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
     cv2.imwrite(str(out_dir / "overlay.png"), vis)
 
     out_path = out_dir / "layout.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
-    log.info("STAGE %s: %d отведений + ритм (независимые окна/baseline), строки=%s, mm/px=%.2f",
-             STAGE, len(cells), centers, mm_px)
+    log.info("STAGE %s: шаблон=%s (%dx%d), %d клеток + %d ритм-строк, строки=%s, mm/px=%.2f",
+             STAGE, tname, R, cols, len(cells), len(rhythm_strips), centers, mm_px)
     return str(out_path)

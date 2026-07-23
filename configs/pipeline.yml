@@ -41,7 +41,9 @@ stages:
     module: layout
     enabled: true
     params:
-      template: "3x4_rhythm"   # 3 ряда × 4 отведения + ритм-строка (II)
+      # "auto" — определить раскладку по числу строк; или имя из
+      # configs/lead_layouts.yml (3x4_1R, 6x2_1R, 12x1).
+      template: "auto"
 
   - name: calibrate
     module: calibrate

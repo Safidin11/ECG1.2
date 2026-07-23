@@ -61,11 +61,14 @@ def main():
     ap.add_argument("-st", "--start_index", type=int, default=0)
     ap.add_argument("-r", "--resolution", type=int, default=200)
     ap.add_argument("--calibration_pulse", type=float, default=1.0)
+    ap.add_argument("--num_columns", type=int, default=-1,
+                    help="число колонок раскладки: 4=3x4, 2=6x2, 1=12x1 (по умолч. авто=4)")
     args = ap.parse_args()
 
     os.makedirs(os.path.abspath(args.output_directory), exist_ok=True)
     ns = build_ns(args.input_file, args.header_file, args.output_directory,
                   args.seed, args.start_index, args.resolution, args.calibration_pulse)
+    ns.num_columns = args.num_columns
 
     # Их код требует запуска из папки генератора (относительные пути к Fonts/ и т.п.)
     sys.path.insert(0, GEN_DIR)

@@ -107,24 +107,27 @@ def run(input_path: str, config: dict) -> str:
     fs = manifest.get("fs", 500)
     n_full = int(fs * 10)
 
+    # Блочные клетки (короткие отведения).
     signals, coverage = {}, {}
     for lead, cell in layout["cells"].items():
         ys, cov = _trace_follow(ink, cell["bbox"], cell["baseline"])
         if ys is not None:
             signals[lead] = _to_mv(ys, mm_px, cell["seconds"], fs, clip_mV)
             coverage[lead] = round(cov, 3)
-    rhythm_sig = None
-    rc = layout.get("rhythm")
-    if rc:
-        ys, rcov = _trace_follow(ink, rc["bbox"], rc["baseline"])
+    # Ритм-строки (полные 10с) — их может быть несколько (напр. V1/II/V5).
+    rhythm_sigs = {}
+    for rs in layout.get("rhythm_strips", []):
+        ys, rcov = _trace_follow(ink, rs["bbox"], rs["baseline"])
         if ys is not None:
-            rhythm_sig = _to_mv(ys, mm_px, rc["seconds"], fs, clip_mV)
-            coverage["II_rhythm"] = round(rcov, 3)
+            rhythm_sigs[rs["lead"]] = _to_mv(ys, mm_px, rs["seconds"], fs, clip_mV)
+            coverage[rs["lead"] + "_rhythm"] = round(rcov, 3)
 
+    # Матрица 12×10с: для отведения берём его ритм-строку (10с) если есть,
+    # иначе блочную клетку (короче, дополняем NaN).
     mat = np.full((n_full, len(LEAD_ORDER)), np.nan, dtype=np.float32)
     for j, lead in enumerate(LEAD_ORDER):
-        if lead == "II" and rhythm_sig is not None:
-            mat[:, j] = rhythm_sig[:n_full]
+        if lead in rhythm_sigs:
+            mat[:, j] = rhythm_sigs[lead][:n_full]
         elif lead in signals:
             s = signals[lead]
             mat[: len(s), j] = s
@@ -138,7 +141,7 @@ def run(input_path: str, config: dict) -> str:
     for ax, lead, j in zip(axs, LEAD_ORDER, range(12)):
         s = mat[:, j]
         ax.plot(np.arange(len(s)) / fs, np.nan_to_num(s), lw=0.7, color="black")
-        cov = coverage.get("II_rhythm" if lead == "II" else lead, 0.0)
+        cov = coverage.get(lead + "_rhythm", coverage.get(lead, 0.0))
         ax.set_ylabel(f"{lead}\ncov={cov:.0%}", rotation=0, labelpad=32, fontsize=9, va="center")
         ax.set_ylim(-2, 2.5)
         ax.grid(alpha=0.3)
