@@ -18,7 +18,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from scipy.ndimage import median_filter
+from scipy.ndimage import median_filter, gaussian_filter1d
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common import get_logger, stage_dir, color_ink  # noqa: E402
@@ -72,6 +72,122 @@ def _trace_follow(ink, bbox, baseline):
     cov = float(good.mean())
     ys = np.interp(idx, idx[good], ys[good]) + y0
     return ys, cov
+
+
+def _qmetric(ys, cov, lo, hi, base, ncol):
+    """Качество восстановления отведения Q∈[0..1] (по синтезу дизайн-панели).
+
+    Штрафы: пропуски (1−cov), обрезка у края окна, плато на краю (обрезанный QRS),
+    baseline прижат к краю (сполз на соседа). Клип/пропуски весомее.
+    """
+    if ys is None or len(ys) == 0:
+        return 0.0
+    H = max(1, hi - lo)
+    K = max(2, int(round(0.02 * H)))
+    clipped = (ys <= lo + K) | (ys >= hi - K)
+    clip_frac = float(clipped.mean())
+    # самый длинный подряд-«прижатый» участок (плато обрезки)
+    run = mx = 0
+    for c in clipped:
+        run = run + 1 if c else 0
+        mx = max(mx, run)
+    p_gap = 1.0 - float(cov)
+    p_clip = clip_frac
+    p_plateau = min(1.0, mx / (0.10 * max(1, ncol)))
+    edge_dist = min(base - lo, hi - base)
+    p_base = min(1.0, max(0.0, 1.0 - edge_dist / (0.25 * H)))
+    q = 1.0 - (0.35 * p_gap + 0.30 * p_clip + 0.20 * p_plateau + 0.15 * p_base)
+    return min(1.0, max(0.0, q))
+
+
+def _isolate_lead_ink(mask, x0, x1, ytop, ybot, seed_ys, base_y):
+    """ROI-компоненты ink, связные с трассой отведения или его baseline.
+
+    Гейт связности: высокий QRS — одна компонента, прикреплённая к изолинии
+    отведения (заявляем её), а отдельная компонента соседа отбрасывается.
+    """
+    sub = (mask[ytop:ybot, x0:x1] > 0).astype(np.uint8)
+    n, lbl = cv2.connectedComponents(sub, 8)
+    seed = np.zeros_like(sub)
+    if seed_ys is not None:
+        for i, y in enumerate(seed_ys):
+            yy = int(round(y)) - ytop
+            if 0 <= yy < sub.shape[0]:
+                seed[yy, i] = 1
+    br = base_y - ytop
+    if 0 <= br < sub.shape[0]:
+        seed[br, :] = 1
+    labels = set(np.unique(lbl[(seed > 0) & (sub > 0)]).tolist()) - {0}
+    keep = np.zeros_like(sub)
+    for l in labels:
+        keep[lbl == l] = 1
+    return keep
+
+
+def _walk_extent(h, start, limit):
+    """От строки start идём наружу, пока не встретим пустой прогон (≥limit строк ink≤1)."""
+    out = {}
+    for d in (-1, 1):
+        empty = 0
+        y = start
+        last = 0
+        while 0 <= y + d < len(h):
+            y += d
+            if h[y] <= 1:
+                empty += 1
+                if empty >= limit:
+                    break
+            else:
+                empty = 0
+                last = abs(y - start)
+        out[d] = last
+    return out[-1], out[1]
+
+
+def _layer2_recut(mask, x0, x1, hard_top, hard_bot, seed_ys):
+    """Слой 2: baseline по x-взвешенному профилю + перекрой полосы по краю чернил.
+
+    Широкая изолиния даёт максимум покрытия по строке (узкий QRS — нет), поэтому
+    argmax профиля — это настоящая базовая линия, не зубец и не сосед. Реальные
+    границы находим «прогулкой» до пустых промежутков вверх/вниз.
+    """
+    ncol = max(1, x1 - x0)
+    c = mask[hard_top:hard_bot, x0:x1].sum(1).astype(np.float32) / ncol
+    c = gaussian_filter1d(c, 2.0)
+    if c.max() <= 0:
+        return None
+    y_base = hard_top + int(np.argmax(c))
+    lead = _isolate_lead_ink(mask, x0, x1, hard_top, hard_bot, seed_ys, y_base)
+    h = lead.sum(1)
+    H = hard_bot - hard_top
+    up, down = _walk_extent(h, y_base - hard_top, max(3, int(0.02 * H)))
+    pad = max(6, int(0.06 * (up + down)))
+    lo = max(hard_top, y_base - up - pad)
+    hi = min(hard_bot, y_base + down + pad)
+    ys, cov = _trace_follow(mask, [x0, lo, x1, hi], y_base)
+    return ys, cov, lo, hi, y_base
+
+
+def _trace_cascade(ink, x0, x1, lo, hi, base, top_lim, bot_lim):
+    """Каскад: слой 1 (окно из layout) -> при плохом Q слой 2 (перекрой по чернилам).
+    Держим лучший по Q результат; ранний выход при Q≥0.9.
+    """
+    ncol = x1 - x0
+    ys, cov = _trace_follow(ink, [x0, lo, x1, hi], base)
+    best = (ys, cov, _qmetric(ys, cov, lo, hi, base, ncol), lo, hi)
+    if best[2] < 0.85:
+        hard_top = top_lim
+        hard_bot = bot_lim
+        try:
+            r = _layer2_recut(ink, x0, x1, hard_top, hard_bot, ys)
+        except Exception:
+            r = None
+        if r is not None:
+            ys2, cov2, lo2, hi2, base2 = r
+            q2 = _qmetric(ys2, cov2, lo2, hi2, base2, ncol)
+            if q2 > best[2]:
+                best = (ys2, cov2, q2, lo2, hi2)
+    return best
 
 
 def _to_mv(ys, mm_px, seconds, fs, clip):
@@ -132,13 +248,25 @@ def run(input_path: str, config: dict) -> str:
 
     # Блочные клетки (короткие отведения). px_traces — трассы в ИСХОДНЫХ
     # пиксельных координатах (для геометрически идентичной реконструкции).
+    # Группируем по КОЛОНКЕ и сортируем по y, чтобы каскад знал границы соседей.
     signals, coverage, px_traces = {}, {}, []
+    H = ink.shape[0]
+    by_col = {}
     for lead, cell in layout["cells"].items():
-        ys, cov = _trace_follow(ink, cell["bbox"], cell["baseline"])
-        if ys is not None:
-            signals[lead] = _to_mv(ys, mm_px, cell["seconds"], fs, clip_mV)
-            coverage[lead] = round(cov, 3)
-            px_traces.append((cell["bbox"][0], ys))
+        by_col.setdefault(cell["col"], []).append((lead, cell))
+    for col, items in by_col.items():
+        items.sort(key=lambda t: t[1]["bbox"][1])   # по верхней границе окна
+        for k, (lead, cell) in enumerate(items):
+            x0, lo, x1, hi = cell["bbox"]
+            top_lim = items[k - 1][1]["bbox"][3] if k > 0 else 0
+            bot_lim = items[k + 1][1]["bbox"][1] if k < len(items) - 1 else H
+            ys, cov, q, lo_u, hi_u = _trace_cascade(
+                ink, x0, x1, lo, hi, cell["baseline"], top_lim, bot_lim)
+            if ys is not None:
+                signals[lead] = _to_mv(ys, mm_px, cell["seconds"], fs, clip_mV)
+                coverage[lead] = round(cov, 3)
+                px_traces.append((x0, ys))
+                cell["bbox"] = [x0, lo_u, x1, hi_u]   # обновим окно для overlay
     # Ритм-строки (полные 10с) — их может быть несколько (напр. V1/II/V5).
     rhythm_sigs = {}
     for rs in layout.get("rhythm_strips", []):
