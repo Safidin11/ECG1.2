@@ -45,13 +45,14 @@ def _clusters(colpix):
     return out
 
 
-def _trace_follow(ink, bbox, baseline):
+def _trace_follow(ink, bbox, baseline, slew=SLEW_PX):
     """Трассировка отведения по цветовым чернилам следованием за кластером.
 
     В каждом столбце берём кластер, ближайший к текущей траектории (при равенстве
-    — тоньше, чтобы не липнуть к разделителю/тексту). Скачок > SLEW_PX запрещён
+    — тоньше, чтобы не липнуть к разделителю/тексту). Скачок > slew запрещён
     (иначе трасса «проваливается» в глубокий S/шум прямоугольником). Разрывы
-    интерполируем и продолжаем.
+    интерполируем и продолжаем. slew=None — без ограничения (для чистой изолир.
+    компоненты, где нет сетки/соседей и крутой QRS не должен резаться).
     """
     x0, y0, x1, y1 = bbox
     n = x1 - x0
@@ -62,7 +63,7 @@ def _trace_follow(ink, bbox, baseline):
         if not cl:
             continue
         c, _h = min(cl, key=lambda t: (abs(t[0] - prev), t[1]))
-        if abs(c - prev) <= SLEW_PX:
+        if slew is None or abs(c - prev) <= slew:
             ys[i] = c
             prev = c
     idx = np.arange(n)
@@ -96,7 +97,11 @@ def _qmetric(ys, cov, lo, hi, base, ncol):
     p_plateau = min(1.0, mx / (0.10 * max(1, ncol)))
     edge_dist = min(base - lo, hi - base)
     p_base = min(1.0, max(0.0, 1.0 - edge_dist / (0.25 * H)))
-    q = 1.0 - (0.35 * p_gap + 0.30 * p_clip + 0.20 * p_plateau + 0.15 * p_base)
+    # штраф за скачки/ступеньки: доля соседних отсчётов с большим скачком
+    diffs = np.abs(np.diff(ys)) if len(ys) > 1 else np.array([0.0])
+    p_jump = min(1.0, float(np.mean(diffs > 0.18 * H)) / 0.03)
+    q = 1.0 - (0.30 * p_gap + 0.25 * p_clip + 0.15 * p_plateau
+               + 0.15 * p_base + 0.15 * p_jump)
     return min(1.0, max(0.0, q))
 
 
@@ -118,9 +123,9 @@ def _isolate_lead_ink(mask, x0, x1, ytop, ybot, seed_ys, base_y):
     if 0 <= br < sub.shape[0]:
         seed[br, :] = 1
     labels = set(np.unique(lbl[(seed > 0) & (sub > 0)]).tolist()) - {0}
-    keep = np.zeros_like(sub)
-    for l in labels:
-        keep[lbl == l] = 1
+    keep = np.zeros((mask.shape[0], mask.shape[1]), np.uint8)   # полный размер
+    kk = np.isin(lbl, list(labels)) if labels else np.zeros_like(sub, bool)
+    keep[ytop:ybot, x0:x1] = kk.astype(np.uint8)
     return keep
 
 
@@ -158,13 +163,17 @@ def _layer2_recut(mask, x0, x1, hard_top, hard_bot, seed_ys):
         return None
     y_base = hard_top + int(np.argmax(c))
     lead = _isolate_lead_ink(mask, x0, x1, hard_top, hard_bot, seed_ys, y_base)
-    h = lead.sum(1)
+    h = lead.sum(1)                                   # полноразмерный, индекс абсолютный
     H = hard_bot - hard_top
-    up, down = _walk_extent(h, y_base - hard_top, max(3, int(0.02 * H)))
+    up, down = _walk_extent(h, y_base, max(3, int(0.02 * H)))
     pad = max(6, int(0.06 * (up + down)))
     lo = max(hard_top, y_base - up - pad)
     hi = min(hard_bot, y_base + down + pad)
-    ys, cov = _trace_follow(mask, [x0, lo, x1, hi], y_base)
+    # Трассируем по ИЗОЛИРОВАННОЙ компоненте без ограничения скачка: нет прыжков
+    # на сетку/соседа, крутой QRS не режется.
+    bridged = cv2.morphologyEx(lead, cv2.MORPH_CLOSE,
+                               cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1)))
+    ys, cov = _trace_follow(bridged, [x0, lo, x1, hi], y_base, slew=None)
     return ys, cov, lo, hi, y_base
 
 
@@ -175,11 +184,10 @@ def _trace_cascade(ink, x0, x1, lo, hi, base, top_lim, bot_lim):
     ncol = x1 - x0
     ys, cov = _trace_follow(ink, [x0, lo, x1, hi], base)
     best = (ys, cov, _qmetric(ys, cov, lo, hi, base, ncol), lo, hi)
-    if best[2] < 0.85:
-        hard_top = top_lim
-        hard_bot = bot_lim
+    # Пытаемся улучшить любое неидеальное отведение (keep-best -> без регресса).
+    if best[2] < 0.93:
         try:
-            r = _layer2_recut(ink, x0, x1, hard_top, hard_bot, ys)
+            r = _layer2_recut(ink, x0, x1, top_lim, bot_lim, ys)
         except Exception:
             r = None
         if r is not None:
