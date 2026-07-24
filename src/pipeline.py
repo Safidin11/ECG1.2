@@ -62,8 +62,12 @@ def make_run_dir(cfg: dict) -> Path:
     return run_dir
 
 
-def run_pipeline(input_path: str, config_path: str) -> str:
+def run_pipeline(input_path: str, config_path: str, template: str | None = None) -> str:
     cfg = load_config(config_path)
+    if template:  # переопределить раскладку из CLI (иначе — из конфига/auto)
+        for st in cfg.get("stages", []):
+            if st.get("name") == "layout":
+                st.setdefault("params", {})["template"] = template
     run_dir = make_run_dir(cfg)
     cfg["_run_dir"] = str(run_dir)
     cfg["_repo_root"] = str(REPO_ROOT)
@@ -114,13 +118,17 @@ def main() -> None:
         default=str(REPO_ROOT / "configs" / "pipeline.yml"),
         help="путь к pipeline.yml",
     )
+    ap.add_argument(
+        "--template", "-t", default=None,
+        help="раскладка явно (3x4, 3x4_1R, 3x4_3R, 6x2, 6x2_1R, 12x1); по умолч. auto",
+    )
     args = ap.parse_args()
 
     if not Path(args.input).exists():
         log.error("Входной файл не найден: %s", args.input)
         sys.exit(1)
 
-    run_pipeline(args.input, args.config)
+    run_pipeline(args.input, args.config, template=args.template)
 
 
 if __name__ == "__main__":

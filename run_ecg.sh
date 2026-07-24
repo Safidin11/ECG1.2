@@ -5,16 +5,20 @@ set -e
 cd "$(dirname "$0")"
 
 if [ -z "$1" ]; then
-  echo "Использование: ./run_ecg.sh /путь/к/фото.(jpg|png)"
+  echo "Использование: ./run_ecg.sh /путь/к/фото.(jpg|png) [формат]"
+  echo "  формат (необязательно): 3x4 3x4_1R 3x4_3R 6x2 6x2_1R 12x1 (по умолч. auto)"
   exit 1
 fi
 if [ ! -f "$1" ]; then
   echo "Файл не найден: $1"; exit 1
 fi
 
+TPL_ARG=""
+[ -n "$2" ] && TPL_ARG="--template $2" && echo "Формат задан явно: $2"
+
 echo "Запускаю пайплайн на: $1"
 echo "(первый прогон новой картинки ~5-8 мин — nnU-Net на CPU; потом мгновенно из кэша)"
-./.venv/bin/python src/pipeline.py --input "$1" 2>&1 | grep -vE "nnUNet_raw|nnUNet_preprocessed"
+./.venv/bin/python src/pipeline.py --input "$1" $TPL_ARG 2>&1 | grep -vE "nnUNet_raw|nnUNet_preprocessed"
 
 RUN=$(ls -td output/runs/2026* | head -1)
 echo ""
