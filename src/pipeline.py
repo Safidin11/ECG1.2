@@ -62,12 +62,17 @@ def make_run_dir(cfg: dict) -> Path:
     return run_dir
 
 
-def run_pipeline(input_path: str, config_path: str, template: str | None = None) -> str:
+def run_pipeline(input_path: str, config_path: str, template: str | None = None,
+                 fast: bool = False) -> str:
     cfg = load_config(config_path)
     if template:  # переопределить раскладку из CLI (иначе — из конфига/auto)
         for st in cfg.get("stages", []):
             if st.get("name") == "layout":
                 st.setdefault("params", {})["template"] = template
+    if fast:  # быстрый путь: без сегментации nnU-Net (layout/vectorize по чернилам)
+        for st in cfg.get("stages", []):
+            if st.get("name") == "segment":
+                st["enabled"] = False
     run_dir = make_run_dir(cfg)
     cfg["_run_dir"] = str(run_dir)
     cfg["_repo_root"] = str(REPO_ROOT)
@@ -122,13 +127,17 @@ def main() -> None:
         "--template", "-t", default=None,
         help="раскладка явно (3x4, 3x4_1R, 3x4_3R, 6x2, 6x2_1R, 12x1); по умолч. auto",
     )
+    ap.add_argument(
+        "--fast", action="store_true",
+        help="быстрый путь без nnU-Net (layout/vectorize по цветовым чернилам)",
+    )
     args = ap.parse_args()
 
     if not Path(args.input).exists():
         log.error("Входной файл не найден: %s", args.input)
         sys.exit(1)
 
-    run_pipeline(args.input, args.config, template=args.template)
+    run_pipeline(args.input, args.config, template=args.template, fast=args.fast)
 
 
 if __name__ == "__main__":

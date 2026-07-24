@@ -136,8 +136,13 @@ def _pick_template(name, layouts, cov):
 
 def run(input_path: str, config: dict) -> str:
     out_dir = stage_dir(config, STAGE)
-    with open(input_path, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
+    # Вход — либо манифест segment.json, либо напрямую картинка core_ready
+    # (быстрый путь без nnU-Net: preprocess -> layout -> vectorize -> output).
+    try:
+        with open(input_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        manifest = {"core_ready_image": str(input_path), "fs": 500}
 
     # Раскладку строим по ЦВЕТОВЫМ ЧЕРНИЛАМ core_ready (плотные, без сетки;
     # работают и на бледных фото, где маска nnU-Net разрежена). Маска опциональна.

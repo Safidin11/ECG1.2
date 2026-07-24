@@ -88,12 +88,20 @@ def _four_point_transform(bgr: np.ndarray, quad: np.ndarray) -> np.ndarray:
 
 
 def _remove_shadows_color(bgr: np.ndarray) -> np.ndarray:
-    """Выровнять освещение поканально делением на размытый фон (сохраняет цвет)."""
+    """Выровнять освещение поканально делением на размытый фон (сохраняет цвет).
+
+    Фон оцениваем на уменьшенной копии (большой блюр на исходном размере очень
+    медленный на крупных картинках) и растягиваем обратно — результат тот же,
+    но в разы быстрее.
+    """
     h, w = bgr.shape[:2]
-    sigma = max(h, w) / 12.0
+    scale = min(1.0, 700.0 / max(h, w))          # оценка фона на ~700px
+    small = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else bgr
+    sigma = max(small.shape[:2]) / 12.0
     out = np.zeros_like(bgr)
     for ch in range(3):
-        blur = cv2.GaussianBlur(bgr[:, :, ch], (0, 0), sigmaX=sigma, sigmaY=sigma)
+        blur_s = cv2.GaussianBlur(small[:, :, ch], (0, 0), sigmaX=sigma, sigmaY=sigma)
+        blur = cv2.resize(blur_s, (w, h), interpolation=cv2.INTER_LINEAR) if scale < 1 else blur_s
         out[:, :, ch] = cv2.divide(bgr[:, :, ch], blur, scale=255)
     return out
 

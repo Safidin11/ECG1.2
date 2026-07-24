@@ -159,14 +159,25 @@ Ahus-AIM/Open-ECG-Digitizer: `grid` из строк; строка с одина�
 
 ---
 
-## Запуск
+## Веб-сервис (удобный способ)
 
 ```bash
-# сгенерировать тестовую синтетическую картинку (если нужно)
-./.venv/bin/python tools/make_synthetic_ecg.py
+./.venv/bin/python -m pip install flask     # один раз
+./.venv/bin/python service/app.py           # -> http://127.0.0.1:5000
+```
 
-# прогнать пайплайн
-./.venv/bin/python src/pipeline.py --input data/samples/synthetic_ecg.png
+Открой в браузере, загрузи картинку ЭКГ, выбери формат раскладки (или «авто») —
+получишь цифровую ЭКГ, разметку отведений и сигналы. Работает по цветовым
+чернилам, **без nnU-Net** — результат за секунды.
+
+## Запуск из терминала
+
+```bash
+# быстрый путь (без nnU-Net), формат можно задать вторым аргументом
+./run_ecg.sh /путь/к/фото.jpg 12x1
+
+# или напрямую
+./.venv/bin/python src/pipeline.py --input фото.jpg --template 6x2_1R
 ```
 
 Артефакты каждого запуска складываются в `output/runs/run_<timestamp>/` — по

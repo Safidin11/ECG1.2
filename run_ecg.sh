@@ -16,9 +16,8 @@ fi
 TPL_ARG=""
 [ -n "$2" ] && TPL_ARG="--template $2" && echo "Формат задан явно: $2"
 
-echo "Запускаю пайплайн на: $1"
-echo "(первый прогон новой картинки ~5-8 мин — nnU-Net на CPU; потом мгновенно из кэша)"
-./.venv/bin/python src/pipeline.py --input "$1" $TPL_ARG 2>&1 | grep -vE "nnUNet_raw|nnUNet_preprocessed"
+echo "Запускаю пайплайн на: $1 (быстрый путь, без nnU-Net — секунды)"
+./.venv/bin/python src/pipeline.py --input "$1" --fast $TPL_ARG 2>&1 | grep -vE "nnUNet_raw|nnUNet_preprocessed"
 
 RUN=$(ls -td output/runs/2026* | head -1)
 echo ""

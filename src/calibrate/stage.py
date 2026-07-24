@@ -37,32 +37,27 @@ def run(input_path: str, config: dict) -> str:
     with open(input_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
 
-    # Если предыдущая стадия деградировала и передала не манифест, а картинку —
-    # мягко выходим passthrough-логикой (пусть решает оркестратор).
-    if "signal_npy" not in manifest:
-        raise RuntimeError("calibrate ожидал манифест segment.json, получил другое")
-
-    signal = np.load(manifest["signal_npy"])
     fs = manifest.get("fs", 500)
-
     calibration = {
         "mm_per_sec": PAPER_MM_PER_SEC,
         "mm_per_mV": PAPER_MM_PER_MV,
         "fs_hz": fs,
         "units": "mV",
-        "applied_by": "felixkrones core (Hough rotation + fixed paper scale)",
-        "signal_stats": {
+        "applied_by": "paper scale 25mm/s, 10mm/mV",
+    }
+    # Статистика по сигналу ядра — только если он есть (в быстром пути segment
+    # отключён, сигнал появится позже в vectorize).
+    if "signal_npy" in manifest and Path(manifest["signal_npy"]).exists():
+        signal = np.load(manifest["signal_npy"])
+        calibration["signal_stats"] = {
             "min": float(np.nanmin(signal)),
             "max": float(np.nanmax(signal)),
             "mean": float(np.nanmean(signal)),
-        },
-    }
+        }
     manifest["calibration"] = calibration
 
     out_path = out_dir / "calibrate.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
-    log.info("STAGE %s: fs=%dГц, 25мм/с, 10мм/мВ, диапазон [%.2f..%.2f] мВ -> %s",
-             STAGE, fs, calibration["signal_stats"]["min"],
-             calibration["signal_stats"]["max"], out_path)
+    log.info("STAGE %s: fs=%dГц, 25мм/с, 10мм/мВ -> %s", STAGE, fs, out_path)
     return str(out_path)
