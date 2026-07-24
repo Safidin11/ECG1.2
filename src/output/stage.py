@@ -27,6 +27,14 @@ def run(input_path: str, config: dict) -> str:
     with open(input_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
 
+    # Нет сигнала (раскладка не распозналась выше) — мягко выходим без вывода.
+    if "signal_npy" not in manifest or not Path(manifest["signal_npy"]).exists():
+        log.warning("STAGE %s: нет сигнала — вывод пропущен (раскладка не распознана)", STAGE)
+        out_path = out_dir / "output.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        return str(out_path)
+
     sig = np.load(manifest["signal_npy"])          # (N, 12), возможны NaN
     leads = manifest.get("leads")
     fs = manifest.get("fs", 500)

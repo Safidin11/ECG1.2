@@ -169,7 +169,13 @@ def run(input_path: str, config: dict) -> str:
 
     centers = detect_row_centers(cov, R)
     if len(centers) < R:
-        raise RuntimeError(f"layout: нашёл строк {len(centers)} < {R} (шаблон {tname})")
+        # Не нашли нужное число строк (не тот формат / не ЭКГ) — мягко выходим.
+        log.warning("STAGE %s: нашёл строк %d < %d (шаблон %s) — пропуск раскладки",
+                    STAGE, len(centers), R, tname)
+        out_path = out_dir / "layout.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        return str(out_path)
     mm_px = detect_mm_per_px(gray)
 
     xs = np.where(ink.any(0))[0]

@@ -123,22 +123,36 @@ def digitize():
     ext = Path(f.filename).suffix.lower() or ".png"
     up = UPLOADS / f"{uuid.uuid4().hex}{ext}"
     f.save(str(up))
+    # Проверим, что картинку вообще можно прочитать (HEIC/иные форматы OpenCV не берёт).
+    import cv2
+    if cv2.imread(str(up)) is None:
+        return render_template_string(
+            PAGE, formats=FORMATS, result=None,
+            error="Не удалось прочитать картинку. Используй JPG или PNG "
+                  "(HEIC/иные форматы не поддерживаются — сконвертируй в JPG).")
     try:
         out_json = run_pipeline(str(up), str(ROOT / "configs" / "pipeline.yml"),
                                 template=(None if template == "auto" else template),
                                 fast=True)
-        d = json.load(open(out_json))
+        d = {}
+        try:
+            with open(out_json, encoding="utf-8") as fp:
+                d = json.load(fp)
+        except Exception:
+            d = {}                          # пайплайн вернул не JSON (все стадии деградировали)
+        if not d.get("digital_ecg"):
+            hint = "Попробуй выбрать формат вручную из списка" if template == "auto" \
+                else "Проверь, что выбран правильный формат, или попробуй другое фото"
+            raise RuntimeError("не удалось распознать раскладку ЭКГ. " + hint)
         run = Path(out_json).parent.parent.name
         lay = d.get("layout", {})
         cov = d.get("coverage", {})
         cov_txt = ", ".join(f"{k} {int(v*100)}%" for k, v in cov.items()) or "—"
-        if not d.get("digital_ecg"):
-            raise RuntimeError("не удалось построить раскладку — попробуй выбрать формат вручную")
         result = {"run": run, "template": lay.get("template", template), "cov": cov_txt}
         return render_template_string(PAGE, formats=FORMATS, result=result, error=None)
     except Exception as exc:
         return render_template_string(PAGE, formats=FORMATS, result=None,
-                                      error=f"Ошибка: {exc}")
+                                      error=f"{exc}")
 
 
 @app.route("/img/<run>/<stage>/<name>")
