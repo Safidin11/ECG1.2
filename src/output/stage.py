@@ -53,17 +53,26 @@ def run(input_path: str, config: dict) -> str:
     if manifest.get("preview") and Path(manifest["preview"]).exists():
         shutil.copy2(manifest["preview"], final_preview)
 
-    # цифровая ЭКГ на «миллиметровке» в ИСХОДНОЙ раскладке (grid из layout)
+    # Основная цифровая ЭКГ — геометрически идентичная оригиналу (тот же размер,
+    # позиции, масштаб; из vectorize). Плюс «чистый» рендер в раскладке — как доп.
     digital_ecg = out_dir / "digital_ecg.png"
+    recon = manifest.get("reconstruction")
+    if recon and Path(recon).exists():
+        shutil.copy2(recon, digital_ecg)
+        manifest["digital_ecg"] = str(digital_ecg)
     try:
         sys.path.insert(0, str(Path(config["_repo_root"]) / "tools"))
         from render_digital_ecg import render  # noqa: E402
         lay = manifest.get("layout") or {}
-        render(manifest["signal_npy"], str(digital_ecg), fs=fs,
+        clean = out_dir / "digital_ecg_clean.png"
+        render(manifest["signal_npy"], str(clean), fs=fs,
                grid=lay.get("grid"), cols=lay.get("cols"))
-        manifest["digital_ecg"] = str(digital_ecg)
+        manifest["digital_ecg_clean"] = str(clean)
+        if not manifest.get("digital_ecg"):     # если реконструкции нет — как основную
+            shutil.copy2(clean, digital_ecg)
+            manifest["digital_ecg"] = str(digital_ecg)
     except Exception as exc:  # рендер не критичен для пайплайна
-        log.warning("STAGE %s: не удалось отрисовать цифровую ЭКГ: %s", STAGE, exc)
+        log.warning("STAGE %s: не удалось отрисовать чистую ЭКГ: %s", STAGE, exc)
 
     manifest["wfdb_record"] = str(out_dir / record)
     manifest["final_preview"] = str(final_preview)

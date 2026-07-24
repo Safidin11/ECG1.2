@@ -86,6 +86,29 @@ def _to_mv(ys, mm_px, seconds, fs, clip):
     return np.interp(np.linspace(0, 1, target), np.linspace(0, 1, len(mV)), mV)
 
 
+def _render_geometry(shape, px_traces, mm_px):
+    """Реконструкция в исходной геометрии: холст РАЗМЕРА картинки, светлая
+    ЭКГ-сетка и восстановленные трассы в тех же пиксельных координатах."""
+    H, W = shape[:2]
+    canvas = np.full((H, W, 3), 255, np.uint8)
+    minor = max(2, int(round(mm_px)))          # 1 мм
+    major = minor * 5                          # 5 мм
+    c_minor = (205, 200, 248)                  # BGR: светло-розовая сетка 1 мм
+    c_major = (170, 165, 240)                  # 5 мм — насыщеннее
+    for x in range(0, W, minor):
+        canvas[:, x] = c_minor
+    for y in range(0, H, minor):
+        canvas[y, :] = c_minor
+    for x in range(0, W, major):
+        canvas[:, x] = c_major
+    for y in range(0, H, major):
+        canvas[y, :] = c_major
+    for x0, ys in px_traces:
+        pts = np.array([[x0 + i, int(round(y))] for i, y in enumerate(ys)], np.int32)
+        cv2.polylines(canvas, [pts], False, (20, 20, 20), 2, cv2.LINE_AA)
+    return canvas
+
+
 def run(input_path: str, config: dict) -> str:
     out_dir = stage_dir(config, STAGE)
     clip_mV = float(config.get("_stage_params", {}).get("clip_mV", 3.0))
@@ -107,13 +130,15 @@ def run(input_path: str, config: dict) -> str:
     fs = manifest.get("fs", 500)
     n_full = int(fs * 10)
 
-    # Блочные клетки (короткие отведения).
-    signals, coverage = {}, {}
+    # Блочные клетки (короткие отведения). px_traces — трассы в ИСХОДНЫХ
+    # пиксельных координатах (для геометрически идентичной реконструкции).
+    signals, coverage, px_traces = {}, {}, []
     for lead, cell in layout["cells"].items():
         ys, cov = _trace_follow(ink, cell["bbox"], cell["baseline"])
         if ys is not None:
             signals[lead] = _to_mv(ys, mm_px, cell["seconds"], fs, clip_mV)
             coverage[lead] = round(cov, 3)
+            px_traces.append((cell["bbox"][0], ys))
     # Ритм-строки (полные 10с) — их может быть несколько (напр. V1/II/V5).
     rhythm_sigs = {}
     for rs in layout.get("rhythm_strips", []):
@@ -121,6 +146,13 @@ def run(input_path: str, config: dict) -> str:
         if ys is not None:
             rhythm_sigs[rs["lead"]] = _to_mv(ys, mm_px, rs["seconds"], fs, clip_mV)
             coverage[rs["lead"] + "_rhythm"] = round(rcov, 3)
+            px_traces.append((rs["bbox"][0], ys))
+
+    # Геометрически идентичная реконструкция: те же трассы на холсте РАЗМЕРА
+    # исходной картинки, в тех же координатах и масштабе (только чистые линии).
+    recon = _render_geometry(ink.shape, px_traces, mm_px)
+    recon_path = out_dir / "reconstruction.png"
+    cv2.imwrite(str(recon_path), recon)
 
     # Матрица 12×10с: для отведения берём его ритм-строку (10с) если есть,
     # иначе блочную клетку (короче, дополняем NaN).
@@ -154,6 +186,7 @@ def run(input_path: str, config: dict) -> str:
 
     manifest["signal_npy"] = str(signal_npy)
     manifest["preview"] = str(preview)
+    manifest["reconstruction"] = str(recon_path)
     manifest["leads"] = LEAD_ORDER
     manifest["coverage"] = coverage
     manifest["vectorizer"] = "per-lead independent trace-following (own baseline/ROI, drift removal)"
