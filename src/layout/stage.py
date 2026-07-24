@@ -71,6 +71,36 @@ def detect_row_centers(cov: np.ndarray, R: int):
     return centers
 
 
+def col_coverage(ink: np.ndarray, x0: int, x1: int) -> np.ndarray:
+    """Нормированный профиль покрытия по строкам ТОЛЬКО в колонке [x0:x1]."""
+    H = ink.shape[0]
+    cov = cv2.blur(ink[:, x0:x1].mean(1).astype(np.float32).reshape(-1, 1),
+                   (1, max(7, H // 90))).ravel()
+    m = cov.max()
+    return cov / m if m > 0 else cov
+
+
+def detect_bands(cov: np.ndarray, R: int):
+    """R полос (lo, hi, center): R центров + границы по ВПАДИНАМ покрытия.
+
+    Границы между строками — не фиксированная доля, а реальная впадина (минимум
+    покрытия) между соседними центрами. Так полосы подстраиваются под РАЗНУЮ
+    высоту отведений и частичные пересечения (у каждой строки своя граница).
+    Верх/низ — по краю контента, чтобы не срезать высокие зубцы у краёв.
+    """
+    centers = detect_row_centers(cov, R)
+    if len(centers) < R:
+        return None
+    ys = np.where(cov > 0.1)[0]
+    top, bot = (int(ys.min()), int(ys.max())) if len(ys) else (0, len(cov))
+    bounds = [min(centers[0] - 5, top)]
+    for i in range(R - 1):
+        a, b = centers[i], centers[i + 1]
+        bounds.append(a + int(np.argmin(cov[a:b])) if b > a + 1 else (a + b) // 2)
+    bounds.append(max(centers[-1] + 5, bot))
+    return [(max(0, bounds[i]), min(len(cov), bounds[i + 1]), centers[i]) for i in range(R)]
+
+
 def score_layout(cov: np.ndarray, R: int) -> float:
     """Насколько хорошо R строк объясняют профиль покрытия (больше — лучше).
 
@@ -188,23 +218,27 @@ def run(input_path: str, config: dict) -> str:
     for c in range(1, cols):
         columns[c][0] += label_trim
 
+    # Вертикальные полосы СВОИ для каждой колонки (грудные и от конечностей стоят
+    # на разной высоте; границы — по впадинам покрытия). Ритм-строки на всю ширину
+    # берём из глобального профиля.
+    global_bands = detect_bands(cov, R)
+    col_bands = [detect_bands(col_coverage(ink, cx0, cx1), R) or global_bands
+                 for cx0, cx1 in columns]
+
     cells, rhythm_strips = {}, []
-    for r, center in enumerate(centers):
-        up = center - (centers[r - 1] if r > 0 else 0)
-        dn = (centers[r + 1] if r < R - 1 else H) - center
-        wlo = max(0, int(center - WIN_FRAC * up))
-        whi = min(H, int(center + WIN_FRAC * dn))
-        row = grid[r]
+    for r, row in enumerate(grid):
         if cols > 1 and all(l == row[0] for l in row):   # ритм-строка на всю ширину
-            base = lead_baseline(ink, xL + cal_trim, xR, wlo, whi)
-            rhythm_strips.append({"lead": row[0], "bbox": [xL + cal_trim, wlo, xR, whi],
+            lo, hi, _ = global_bands[r]
+            base = lead_baseline(ink, xL + cal_trim, xR, lo, hi)
+            rhythm_strips.append({"lead": row[0], "bbox": [xL + cal_trim, lo, xR, hi],
                                   "baseline": base, "seconds": paper_sec})
-        else:                                        # обычная строка блока
+        else:                                            # блок: полоса СВОЯ на колонку
             for c in range(cols):
                 lead = row[c]
                 x0, x1 = columns[c]
-                base = lead_baseline(ink, x0, x1, wlo, whi)
-                cells[lead] = {"row": r, "col": c, "bbox": [x0, wlo, x1, whi],
+                lo, hi, _ = col_bands[c][r]
+                base = lead_baseline(ink, x0, x1, lo, hi)
+                cells[lead] = {"row": r, "col": c, "bbox": [x0, lo, x1, hi],
                                "baseline": base, "seconds": paper_sec / cols}
 
     manifest["layout"] = {
