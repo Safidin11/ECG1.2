@@ -34,16 +34,26 @@ def stage_dir(config: dict, stage: str) -> Path:
     return d
 
 
-def color_ink(bgr: np.ndarray, thr: int = 130) -> np.ndarray:
-    """Извлечь «чернила» ЭКГ по цвету: тёмные во ВСЕХ каналах (чёрная трасса).
+def color_ink(bgr: np.ndarray, thr: int | None = None) -> np.ndarray:
+    """Извлечь «чернила» ЭКГ по ЯРКОСТИ с адаптивным порогом (двухуровневый Otsu).
 
-    Розовая/красная сетка имеет высокий R и отсекается — это устойчивее
-    полутонового порога (который ловит яркую сетку и даёт заусенцы). Возвращает
-    бинарную маску трассы (uint8 0/1). Текст-подписи чёрные и сюда тоже попадают —
-    их обрезаем по геометрии колонок в стадии layout.
+    Трасса — самая ТЁМНАЯ структура, любого цвета (чёрная, синяя, фиолетовая).
+    Порог подбирается сам под каждую картинку: сначала Otsu отделяет фон от
+    не-фона (сетка+трасса), затем второй Otsu среди не-фона отделяет более тёмную
+    трассу от более светлой сетки. Так работает и на цветных распечатках, где
+    «тёмное во всех каналах» теряло синюю трассу (у неё высокий канал B).
+
+    thr — можно задать порог яркости вручную (иначе адаптивно).
     """
-    b, g, r = cv2.split(bgr)
-    return ((b < thr) & (g < thr) & (r < thr)).astype(np.uint8)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    if thr is None:
+        t1, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        dark = gray[gray < t1]
+        if dark.size > 100:
+            thr, _ = cv2.threshold(dark, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        else:
+            thr = t1
+    return (gray < thr).astype(np.uint8)
 
 
 def passthrough(input_path: str, config: dict, stage: str) -> str:
