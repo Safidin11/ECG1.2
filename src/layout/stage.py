@@ -142,19 +142,28 @@ def lead_baseline(ink: np.ndarray, x0, x1, lo, hi) -> int:
     return lo + int(np.argmax(h) * 2)
 
 
+# Авто-детект рассматривает только распространённые раскладки с УНИКАЛЬНЫМ числом
+# строк (4/7/12) — так нет неоднозначности (напр. 6-строчные 3x4_3R и 6x2 по
+# строкам неразличимы). Редкие форматы (3x4, 3x4_3R, 6x2) — только явным выбором.
+AUTO_TEMPLATES = ("3x4_1R", "6x2_1R", "12x1")
+
+
 def _pick_template(name, layouts, cov):
     """Выбрать шаблон: явно по имени или авто по фит-скорингу покрытия.
 
-    Авто: перебираем шаблоны, выбираем тот, чьё число строк лучше всего
-    объясняет профиль покрытия (score_layout). Устойчиво к разным форматам
-    (3×4, 6×2, 12×1) и к высоким QRS / шапке.
+    Авто: перебираем только AUTO_TEMPLATES (уникальное число строк) и выбираем
+    тот, чьё число строк лучше объясняет профиль покрытия (score_layout).
+    Редкие/неоднозначные раскладки доступны только явным template.
     """
     if name and name != "auto":
         if name not in layouts:
             raise RuntimeError(f"layout: шаблон '{name}' не найден в lead_layouts.yml")
         return name, layouts[name]
     best, best_score = None, -1e9
-    for tname, tpl in layouts.items():
+    for tname in AUTO_TEMPLATES:
+        tpl = layouts.get(tname)
+        if tpl is None:
+            continue
         s = score_layout(cov, len(tpl["grid"]))
         log.info("STAGE %s: авто-скоринг %s (%d строк) = %.3f", STAGE, tname, len(tpl["grid"]), s)
         if s > best_score:
