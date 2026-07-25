@@ -118,6 +118,20 @@ def _clahe(bgr):
     return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
 
 
+def sauvola_ink(gray, w=35, k=0.3, R=128.0):
+    """Адаптивная бинаризация Sauvola: локальный порог на пиксель — плотно ловит
+    БЛЕДНУЮ трассу (фото экрана/скан), где color_ink берёт слишком редко."""
+    im = gray.astype(np.float32)
+    w = w if w % 2 else w + 1
+    mean = cv2.boxFilter(im, -1, (w, w))
+    sq = cv2.boxFilter(im * im, -1, (w, w))
+    std = np.sqrt(np.maximum(sq - mean * mean, 0))
+    T = mean * (1 + k * (std / R - 1))
+    ink = (im < T).astype(np.uint8)
+    ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    return ink
+
+
 def _upscale_to_width(bgr, target_w):
     h, w = bgr.shape[:2]
     if abs(w - target_w) < 2:
@@ -160,26 +174,27 @@ def run(input_path: str, config: dict) -> str:
         if quad is not None:
             region = _warp(region, quad)
 
-    # 3) свет/контраст: деление на фон; CLAHE — только если трасса БЛЕДНАЯ
-    #    (на чистых картинках CLAHE раздувает сетку и ломает извлечение).
+    # 3) свет/контраст. Определяем «бледность» по покрытию color_ink на deshadow.
     desh = _remove_shadows_color(region)
     faint = float(color_ink(desh).mean()) < MIN_INK_COV
-    final = _clahe(desh) if faint else desh
-    log.info("STAGE %s: CLAHE=%s (трасса %s)", STAGE, faint, "бледная" if faint else "чёткая")
+    final = _clahe(desh) if faint else desh    # CLAHE — только для бледных
+    log.info("STAGE %s: трасса %s", STAGE, "бледная (Sauvola+CLAHE)" if faint else "чёткая (color_ink)")
 
     # 4) апскейл
     core = _upscale_to_width(final, target_w)
     core_path = out_dir / "core_ready.png"
     cv2.imwrite(str(core_path), core)
 
-    # 5) маска трассы (color_ink) -> ink.png рядом с core_ready
-    ink = color_ink(core)
+    # 5) маска трассы: бледная -> Sauvola (плотно), чёткая -> color_ink (чисто).
+    gray = cv2.cvtColor(core, cv2.COLOR_BGR2GRAY)
+    ink = sauvola_ink(gray) if faint else color_ink(core)
     cv2.imwrite(str(out_dir / "ink.png"), ink * 255)
 
     _panel([("1. original", original),
             ("2. region", region),
             ("3. contrast" + (" +CLAHE" if faint else ""), final),
-            ("4. ink", ink * 255)], out_dir / "before_after.png")
+            ("4. ink " + ("(Sauvola)" if faint else "(color)"), ink * 255)],
+           out_dir / "before_after.png")
     log.info("STAGE %s: core_ready %s, ink=%.1f%% -> %s", STAGE, core.shape[:2],
              100 * float(ink.mean()), core_path)
     return str(core_path)
