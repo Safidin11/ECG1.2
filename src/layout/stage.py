@@ -24,7 +24,7 @@ import yaml
 from scipy.signal import find_peaks
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import get_logger, stage_dir, color_ink  # noqa: E402
+from common import get_logger, stage_dir, load_ink  # noqa: E402
 
 STAGE = "layout"
 log = get_logger(STAGE)
@@ -186,7 +186,7 @@ def run(input_path: str, config: dict) -> str:
 
     bgr = cv2.imread(core_img)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    ink = color_ink(bgr)
+    ink = load_ink(core_img)                 # готовая маска Sauvola из preprocess
     H, W = ink.shape
     cov = coverage_profile(ink)
 

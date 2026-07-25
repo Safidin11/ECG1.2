@@ -21,7 +21,7 @@ import numpy as np
 from scipy.ndimage import median_filter, gaussian_filter1d
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import get_logger, stage_dir, color_ink  # noqa: E402
+from common import get_logger, stage_dir, load_ink  # noqa: E402
 
 STAGE = "vectorize"
 log = get_logger(STAGE)
@@ -248,7 +248,7 @@ def run(input_path: str, config: dict) -> str:
         return str(out_path)
 
     core_img = manifest.get("core_ready_image")
-    ink = color_ink(cv2.imread(core_img)) if core_img and Path(core_img).exists() else \
+    ink = load_ink(core_img) if core_img and Path(core_img).exists() else \
         (cv2.imread(manifest["mask_png"], cv2.IMREAD_UNCHANGED) > 0).astype(np.uint8)
     mm_px = layout["mm_per_px"]
     fs = manifest.get("fs", 500)

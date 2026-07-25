@@ -56,6 +56,16 @@ def color_ink(bgr: np.ndarray, thr: int | None = None) -> np.ndarray:
     return (gray < thr).astype(np.uint8)
 
 
+def load_ink(core_ready_path: str) -> np.ndarray:
+    """Бинарная маска трассы: готовая ink.png рядом с core_ready (Sauvola из
+    preprocess) — иначе fallback на color_ink по самой картинке."""
+    p = Path(core_ready_path)
+    ink_p = p.parent / "ink.png"
+    if ink_p.exists():
+        return (cv2.imread(str(ink_p), cv2.IMREAD_GRAYSCALE) > 127).astype(np.uint8)
+    return color_ink(cv2.imread(str(p)))
+
+
 def passthrough(input_path: str, config: dict, stage: str) -> str:
     """Заглушка стадии: копирует вход в выход и логирует passthrough.
 
