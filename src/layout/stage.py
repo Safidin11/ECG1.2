@@ -206,10 +206,14 @@ def run(input_path: str, config: dict) -> str:
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
         return str(out_path)
-    mm_px = detect_mm_per_px(gray)
-
     xs = np.where(ink.any(0))[0]
     xL, xR = int(xs.min()), int(xs.max())
+    # Масштаб ГЕОМЕТРИЧЕСКИ: контент по ширине = 10с × 25мм/с = 250мм (для любой
+    # стандартной раскладки строка/ритм занимают полные 10с). Надёжнее, чем
+    # автокорреляция сетки (та ловит суб-период). Сверяем с детекцией сетки.
+    mm_px = (xR - xL) / (paper_sec * 25.0)
+    grid_px = detect_mm_per_px(gray)
+    log.info("STAGE %s: mm/px геом=%.2f (сетка~%.2f)", STAGE, mm_px, grid_px)
     cal_trim = int(CAL_TRIM_MM * mm_px)
     label_trim = int(LABEL_TRIM_MM * mm_px)
     colw = (xR - xL) / cols
