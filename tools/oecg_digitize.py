@@ -96,7 +96,7 @@ CONFIG_TEMPLATE = """MODEL:
           required_valid_samples: 2
     device: '{device}'
     resample_size: {resample}
-    rotate_on_resample: true
+    rotate_on_resample: {rotate}
     enable_timing: false
     apply_dewarping: false
 DATA:
@@ -143,11 +143,14 @@ def digitize(input_path: str, out_dir: str,
              layouts: str | None = None,
              resample: int = RESAMPLE, target_w: int = TARGET_W,
              threads: int = 4, device: str = "auto",
-             layout: str | None = None) -> Path:
+             layout: str | None = None, rotate: bool = False) -> Path:
     """Оцифровать одно фото внешним движком. Возвращает папку с результатом.
 
     layout — задать формат ЖЁСТКО (имя из layout_names()); None = пусть
     определяет сам по всему списку.
+    rotate — их rotate_on_resample: разворачивает КАЖДОЕ фото, где высота
+    больше ширины. Для вертикальных ЭКГ (12x1 — 12 строк) это ломает разбор,
+    поэтому по умолчанию выключено: доверяем ориентации снимка.
     resample — внутренний размер для U-Net. Главный рычаг ПАМЯТИ: 3000 (их
     дефолт под GPU) на 8 ГБ ОЗУ уходит в своп; 1800 держится в памяти.
     """
@@ -172,8 +175,9 @@ def digitize(input_path: str, out_dir: str,
         print(f"[oecg] вход {w}x{h}, внутренний размер {resample}, устройство {device}, "
               f"формат {layout or 'авто'}")
         cfg = tmp / "cfg.yml"
-        cfg.write_text(CONFIG_TEMPLATE.format(layouts=lay_path, in_dir=in_dir,
-                                              out_dir=out, resample=resample, device=device))
+        cfg.write_text(CONFIG_TEMPLATE.format(layouts=lay_path, in_dir=in_dir, out_dir=out,
+                                              resample=resample, device=device,
+                                              rotate=str(bool(rotate)).lower()))
         env = {**os.environ, "OMP_NUM_THREADS": str(threads),
                "MKL_NUM_THREADS": str(threads)}
         proc = subprocess.run(

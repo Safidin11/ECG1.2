@@ -299,17 +299,19 @@ def digitize_route():
         if pngs:
             shutil.copy2(pngs[0], run_dir / "engine.png")
 
-        layout, cost = "формат не определён", 1.0
+        layout, cost, layout_key = "формат не определён", 1.0, None
         meta = engine_out / "digitization_metadata.csv"
         if meta.exists():
             last = meta.read_text(encoding="utf-8").strip().split("\n")[-1].split(",")
             if len(last) >= 4:
                 cost = float(last[1])
-                layout = "формат не определён" if last[3] == "Unknown layout" else last[3]
+                layout_key = None if last[3] == "Unknown layout" else last[3]
+                layout = layout_key or "формат не определён"
         if chosen:                       # формат задан вручную — показываем его подпись
             layout, cost = FORMAT_LABEL[chosen], 0.0
 
-        render(str(csvs[0]), str(run_dir / "digital_ecg.png"))
+        render(str(csvs[0]), str(run_dir / "digital_ecg.png"),
+               layout=(chosen or layout_key))
 
         sig, names = load_csv(str(csvs[0]))
         cov = coverage(sig, names)

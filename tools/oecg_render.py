@@ -28,13 +28,50 @@ def coverage(sig: np.ndarray, leads: list[str]) -> dict[str, float]:
     return {name: float((~np.isnan(sig[:, i])).mean()) for i, name in enumerate(leads)}
 
 
-def render(csv_path: str, out_png: str, grid=None, cols: int | None = None) -> str:
-    """Нарисовать цифровую ЭКГ из CSV движка."""
+LAYOUTS_YML = Path(__file__).resolve().parent.parent / "configs" / "oecg_layouts.yml"
+
+
+def grid_for(layout_name: str, cov: dict[str, float] | None = None):
+    """Формат движка -> (сетка, число колонок) для нашего рендера.
+
+    В configs/oecg_layouts.yml сетка задана явно (`leads` = список строк).
+    Ритм-строки идут отдельным списком `rhythm_leads`; "Any" означает «любое
+    отведение», поэтому конкретное берём по покрытию: у ритм-строки она на всю
+    ширину (~100%), у обычной клетки — доля 1/cols.
+    """
+    import yaml
+    layouts = yaml.safe_load(LAYOUTS_YML.read_text(encoding="utf-8")) or {}
+    lay = layouts.get(layout_name)
+    if not lay:
+        return None, None
+    # `leads` бывает списком строк (3×4: строка = список отведений) и плоским
+    # списком (12×1: строка = одно отведение) — нормализуем к списку строк.
+    grid = [[row] if isinstance(row, str) else list(row) for row in lay.get("leads", [])]
+    cols = int(lay.get("layout", {}).get("cols", max((len(r) for r in grid), default=1)))
+    for _ in lay.get("rhythm_leads", []) or []:
+        name = "II"
+        if cov:                                  # ритм = самое «длинное» отведение
+            best = max(cov, key=lambda k: cov[k])
+            if cov[best] > 0.6:
+                name = best
+        grid.append([name] * max(cols, 1))
+    return grid, cols
+
+
+def render(csv_path: str, out_png: str, grid=None, cols: int | None = None,
+           layout: str | None = None) -> str:
+    """Нарисовать цифровую ЭКГ из CSV движка.
+
+    layout — имя формата движка; тогда сетка берётся из него (иначе рендер
+    рисует стандартную 3×4+ритм независимо от реального формата снимка).
+    """
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from render_digital_ecg import render as render_signal      # noqa: E402
 
     sig, leads = load_csv(csv_path)
+    if grid is None and layout:
+        grid, cols = grid_for(layout, coverage(sig, leads))
     # наш рендер ждёт .npy (N,12) в мВ и порядок LEAD_ORDER
     order = [leads.index(n) if n in leads else None for n in LEAD_ORDER]
     out = np.full((sig.shape[0], 12), np.nan)
@@ -61,5 +98,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("-i", "--csv", required=True)
     ap.add_argument("-o", "--out", required=True)
+    ap.add_argument("--layout", default=None, help="формат движка (для правильной сетки)")
     a = ap.parse_args()
-    print(render(a.csv, a.out))
+    print(render(a.csv, a.out, layout=a.layout))
