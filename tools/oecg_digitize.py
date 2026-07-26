@@ -109,12 +109,45 @@ DATA:
 """
 
 
+LAYOUTS_YML = Path(__file__).resolve().parent.parent / "configs" / "oecg_layouts.yml"
+
+
+def layout_names() -> list[str]:
+    """Имена доступных раскладок (в порядке из configs/oecg_layouts.yml)."""
+    import re
+    return re.findall(r"^([A-Za-z_0-9]+):\s*$", LAYOUTS_YML.read_text(encoding="utf-8"), re.M)
+
+
+def _single_layout_yml(name: str, dst: Path) -> Path:
+    """Файл ровно с одной раскладкой — так движок вынужден взять именно её."""
+    import re
+    src = LAYOUTS_YML.read_text(encoding="utf-8")
+    blocks, cur, key = {}, [], None
+    for line in src.splitlines():
+        m = re.match(r"^([A-Za-z_0-9]+):\s*$", line)
+        if m:
+            if key:
+                blocks[key] = "\n".join(cur).rstrip()
+            key, cur = m.group(1), [line]
+        elif key:
+            cur.append(line)
+    if key:
+        blocks[key] = "\n".join(cur).rstrip()
+    if name not in blocks:
+        raise RuntimeError(f"неизвестная раскладка: {name}")
+    dst.write_text(blocks[name] + "\n", encoding="utf-8")
+    return dst
+
+
 def digitize(input_path: str, out_dir: str,
-             layouts: str = str(Path(__file__).resolve().parent.parent / "configs" / "oecg_layouts.yml"),
+             layouts: str | None = None,
              resample: int = RESAMPLE, target_w: int = TARGET_W,
-             threads: int = 4, device: str = "auto") -> Path:
+             threads: int = 4, device: str = "auto",
+             layout: str | None = None) -> Path:
     """Оцифровать одно фото внешним движком. Возвращает папку с результатом.
 
+    layout — задать формат ЖЁСТКО (имя из layout_names()); None = пусть
+    определяет сам по всему списку.
     resample — внутренний размер для U-Net. Главный рычаг ПАМЯТИ: 3000 (их
     дефолт под GPU) на 8 ГБ ОЗУ уходит в своп; 1800 держится в памяти.
     """
@@ -133,9 +166,13 @@ def digitize(input_path: str, out_dir: str,
         in_dir.mkdir()
         name = Path(input_path).stem
         w, h = prepare_image(input_path, in_dir / f"{name}.png", target_w)
-        print(f"[oecg] вход {w}x{h}, внутренний размер {resample}, устройство {device}")
+        lay_path = layouts or str(LAYOUTS_YML)
+        if layout:                            # формат задан вручную -> список из одной раскладки
+            lay_path = str(_single_layout_yml(layout, tmp / "layout.yml"))
+        print(f"[oecg] вход {w}x{h}, внутренний размер {resample}, устройство {device}, "
+              f"формат {layout or 'авто'}")
         cfg = tmp / "cfg.yml"
-        cfg.write_text(CONFIG_TEMPLATE.format(layouts=layouts, in_dir=in_dir,
+        cfg.write_text(CONFIG_TEMPLATE.format(layouts=lay_path, in_dir=in_dir,
                                               out_dir=out, resample=resample, device=device))
         env = {**os.environ, "OMP_NUM_THREADS": str(threads),
                "MKL_NUM_THREADS": str(threads)}
@@ -153,15 +190,21 @@ def digitize(input_path: str, out_dir: str,
 
 def main():
     ap = argparse.ArgumentParser(description="Оцифровка ЭКГ новым движком (Open-ECG-Digitizer)")
-    ap.add_argument("-i", "--input", required=True, help="фото ЭКГ (jpg/png)")
+    ap.add_argument("-i", "--input", help="фото ЭКГ (jpg/png)")
     ap.add_argument("-o", "--out_dir", default=None, help="куда положить результат")
     ap.add_argument("--resample", type=int, default=RESAMPLE,
                     help=f"внутренний размер U-Net (память!), по умолч. {RESAMPLE}")
     ap.add_argument("--width", type=int, default=TARGET_W, help="ширина входа")
     ap.add_argument("--device", default="auto", help="auto (по умолч.) / mps (Apple GPU) / cpu")
+    ap.add_argument("--layout", default=None,
+                    help="задать формат жёстко (список: --list-layouts)")
+    ap.add_argument("--list-layouts", action="store_true", help="показать доступные форматы")
     a = ap.parse_args()
+    if a.list_layouts:
+        print("\n".join(layout_names())); return
     out_dir = a.out_dir or str(Path.cwd() / "output" / "oecg" / Path(a.input).stem)
-    res = digitize(a.input, out_dir, resample=a.resample, target_w=a.width, device=a.device)
+    res = digitize(a.input, out_dir, resample=a.resample, target_w=a.width,
+                   device=a.device, layout=a.layout)
     print(f"\n[oecg] готово -> {res}")
     for f in sorted(res.iterdir()):
         print(f"  {f.name}")

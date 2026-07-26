@@ -28,6 +28,25 @@ sys.path.insert(0, str(ROOT / "tools"))
 from oecg_digitize import digitize                      # noqa: E402
 from oecg_render import coverage, load_csv, render      # noqa: E402
 
+# Формат ЭКГ: имя раскладки движка -> понятная подпись. Первый пункт — авто.
+FORMATS = [
+    ("", "Определить автоматически"),
+    ("standard_3x4_with_r1", "3×4 + ритм II  (стандарт)"),
+    ("standard_3x4", "3×4  (без ритм-строки)"),
+    ("standard_3x4_with_r2", "3×4 + 2 ритм-строки"),
+    ("standard_3x4_with_r3", "3×4 + 3 ритм-строки"),
+    ("standard_12x1", "12×1  (каждое отведение 10 с)"),
+    ("standard_6x2_with_r1", "6×2 + ритм"),
+    ("standard_6x2", "6×2  (без ритм-строки)"),
+    ("precordial_6x1", "6×1  грудные V1–V6"),
+    ("standard_6x1_limb", "6×1  от конечностей"),
+    ("precordial_3x2", "3×2  грудные"),
+    ("standard_3x1", "3×1"),
+    ("cabrera_12x1", "12×1  Кабрера"),
+    ("cabrera_6x1_limb", "6×1  Кабрера, от конечностей"),
+]
+FORMAT_LABEL = dict(FORMATS)
+
 RUNS = ROOT / "output" / "web"
 RUNS.mkdir(parents=True, exist_ok=True)
 
@@ -73,6 +92,15 @@ h1{font-size:23px;font-weight:700;letter-spacing:-.02em}
 .drop span{color:var(--mut);font-size:13px}
 .drop.has{border-style:solid;border-color:var(--acc)}
 input[type=file]{display:none}
+.field{margin-top:16px}
+.field label{display:block;font-size:12.5px;font-weight:600;color:var(--mut);
+  margin-bottom:7px}
+select{width:100%;padding:12px 13px;border-radius:10px;border:1px solid var(--line);
+  background:var(--bg2);color:var(--ink);font-size:14.5px;font-family:inherit;
+  cursor:pointer;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%238b9ab1' stroke-width='1.8' d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 14px center}
+select:focus{outline:none;border-color:var(--acc)}
 button{width:100%;margin-top:16px;background:var(--acc);color:#04121b;border:0;
   border-radius:11px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;
   transition:.15s;font-family:inherit}
@@ -144,10 +172,20 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     <b id=dropTitle>Выбери фото ЭКГ</b>
     <span id=dropSub>или перетащи сюда · JPG, PNG · фото, скан, снимок экрана</span>
   </label>
+
+  <div class=field>
+    <label for=fmt>Формат ЭКГ</label>
+    <select name=layout id=fmt>
+      {% for val, txt in formats %}
+      <option value="{{val}}" {{'selected' if val == sel else ''}}>{{txt}}</option>
+      {% endfor %}
+    </select>
+  </div>
+
   <button type=submit id=go>Оцифровать</button>
   <div class=busy id=busy><div class=spin></div>
     <span style="color:var(--mut);font-size:13px">Обрабатываю — обычно 1–2 минуты…</span></div>
-  <div class=hint>Раскладка (3×4, 6×2, 12×1, 6×1 и др.) определяется автоматически</div>
+  <div class=hint>Если авто-определение промахнулось — выбери формат вручную</div>
 </form>
 
 {% if error %}<div class="card err"><b>Не получилось</b>{{error}}</div>{% endif %}
@@ -157,7 +195,7 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
   <div class=head>
     <h2>Результат</h2>
     <div class=badges>
-      <span class="badge {{'ok' if r.cost < 0.3 else 'warn'}}">{{r.layout}}</span>
+      <span class="badge {{'ok' if r.manual or r.cost < 0.3 else 'warn'}}">{{r.layout}}{{'  · вручную' if r.manual else ''}}</span>
       <span class="badge {{'ok' if r.n_leads == 12 else 'warn'}}">{{r.n_leads}} из 12 отведений</span>
       <span class=badge>{{r.secs}} с</span>
     </div>
@@ -216,8 +254,8 @@ document.getElementById('f').onsubmit=()=>{
 """
 
 
-def _page(error=None, r=None):
-    return render_template_string(PAGE, error=error, r=r)
+def _page(error=None, r=None, sel=""):
+    return render_template_string(PAGE, error=error, r=r, formats=FORMATS, sel=sel)
 
 
 @app.route("/")
@@ -228,8 +266,11 @@ def index():
 @app.route("/digitize", methods=["POST"])
 def digitize_route():
     f = request.files.get("image")
+    chosen = (request.form.get("layout") or "").strip()
+    if chosen and chosen not in FORMAT_LABEL:
+        return _page(error="Неизвестный формат ЭКГ.", sel="")
     if not f or not f.filename:
-        return _page(error="Файл не выбран.")
+        return _page(error="Файл не выбран.", sel=chosen)
 
     run = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:4]
     run_dir = RUNS / run
@@ -245,7 +286,7 @@ def digitize_route():
 
         t0 = datetime.now()
         engine_out = run_dir / "engine"
-        digitize(str(src), str(engine_out))
+        digitize(str(src), str(engine_out), layout=chosen or None)
         secs = int((datetime.now() - t0).total_seconds())
 
         csvs = list(engine_out.glob("*_timeseries_canonical.csv"))
@@ -265,6 +306,8 @@ def digitize_route():
             if len(last) >= 4:
                 cost = float(last[1])
                 layout = "формат не определён" if last[3] == "Unknown layout" else last[3]
+        if chosen:                       # формат задан вручную — показываем его подпись
+            layout, cost = FORMAT_LABEL[chosen], 0.0
 
         render(str(csvs[0]), str(run_dir / "digital_ecg.png"))
 
@@ -274,14 +317,16 @@ def digitize_route():
         n_leads = sum(1 for c in cov.values() if c > 0.05)
 
         (run_dir / "result.json").write_text(json.dumps(
-            {"layout": layout, "cost": cost, "coverage": cov, "seconds": secs},
+            {"layout": layout, "chosen": chosen or None, "cost": cost,
+             "coverage": cov, "seconds": secs},
             ensure_ascii=False, indent=2), encoding="utf-8")
 
-        return _page(r={"run": run, "layout": layout, "cost": cost, "leads": leads,
-                        "n_leads": n_leads, "secs": secs})
+        return _page(sel=chosen, r={"run": run, "layout": layout, "cost": cost,
+                                    "leads": leads, "n_leads": n_leads, "secs": secs,
+                                    "manual": bool(chosen)})
     except Exception as exc:
         app.logger.error("digitize failed: %s", traceback.format_exc())
-        return _page(error=str(exc))
+        return _page(error=str(exc), sel=chosen)
 
 
 @app.route("/img/<run>/<name>")
