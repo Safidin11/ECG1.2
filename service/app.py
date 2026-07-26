@@ -1,170 +1,297 @@
-"""ECG1.2 — локальный веб-сервис дигитизации ЭКГ.
+"""ECG1.2 — веб-сервис оцифровки ЭКГ.
 
-Загрузи картинку ЭКГ, выбери формат раскладки (или «авто») — получишь
-цифровую ЭКГ, разметку отведений и сигналы. Работает по цветовым чернилам,
-без 8-минутного nnU-Net (быстро, секунды).
+Фото бумажной ЭКГ -> цифровой сигнал 12 отведений + реконструкция на
+миллиметровке. Движок: Open-ECG-Digitizer (U-Net, обучен на реальных фото;
+см. external/Open-ECG-Digitizer) — запускается изолированным субпроцессом
+со своим venv, как и другие внешние решения в проекте.
 
 Запуск:
-    ./.venv/bin/python service/app.py
-    открой http://127.0.0.1:5000
+    ./.venv/bin/python service/app.py     ->  http://127.0.0.1:5000
 
 Learning/demo-инструмент. НЕ медицинское изделие.
 """
+from __future__ import annotations
+
 import json
+import shutil
 import sys
+import traceback
 import uuid
+from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, request, send_file, abort, render_template_string
+from flask import Flask, abort, render_template_string, request, send_file
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
-from pipeline import run_pipeline  # noqa: E402
+sys.path.insert(0, str(ROOT / "tools"))
 
-UPLOADS = ROOT / "output" / "uploads"
-UPLOADS.mkdir(parents=True, exist_ok=True)
+from oecg_digitize import digitize                      # noqa: E402
+from oecg_render import coverage, load_csv, render      # noqa: E402
 
-FORMATS = [
-    ("auto", "Авто (определить самому)"),
-    ("3x4_1R", "3×4 + ритм II (стандарт)"),
-    ("3x4", "3×4 (без ритма)"),
-    ("3x4_3R", "3×4 + 3 ритма (V1, II, V5)"),
-    ("6x2_1R", "6×2 + ритм II"),
-    ("6x2", "6×2 (без ритма)"),
-    ("12x1", "12×1 (каждое отведение 10с)"),
-]
+RUNS = ROOT / "output" / "web"
+RUNS.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 60 * 1024 * 1024     # 60 МБ на файл
 
 PAGE = """
 <!doctype html><html lang=ru><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width, initial-scale=1">
-<title>ECG1.2 — дигитайзер ЭКГ</title>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>ECG1.2 — оцифровка ЭКГ</title>
 <style>
-:root{--bg:#0f1420;--card:#182233;--ink:#e8eef7;--mut:#93a1b5;--acc:#4f9dff;--line:#26344a}
-*{box-sizing:border-box}
-body{margin:0;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
-.wrap{max-width:1000px;margin:0 auto;padding:24px}
-h1{font-size:22px;margin:0 0 4px}
-.sub{color:var(--mut);margin:0 0 20px;font-size:13px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:18px}
-label{display:block;font-weight:600;margin:0 0 6px;font-size:13px;color:var(--mut)}
-input[type=file],select{width:100%;padding:11px;border-radius:9px;border:1px solid var(--line);
-  background:#0e1626;color:var(--ink);font-size:14px}
-.row{display:flex;gap:16px;flex-wrap:wrap}.row>div{flex:1;min-width:220px}
-button{margin-top:16px;background:var(--acc);color:#04122b;border:0;border-radius:9px;
-  padding:12px 22px;font-weight:700;font-size:15px;cursor:pointer}
-button:disabled{opacity:.6;cursor:wait}
-.imgs{display:grid;grid-template-columns:1fr;gap:16px}
-.imgs figure{margin:0;background:#0e1626;border:1px solid var(--line);border-radius:10px;padding:10px}
-.imgs figcaption{color:var(--mut);font-size:13px;margin-bottom:8px}
-.imgs img{width:100%;border-radius:6px;display:block}
-.cov{font-size:13px;color:var(--mut);margin-top:6px}
-.err{background:#3a1620;border:1px solid #6b2233;color:#ffb3c0;padding:12px;border-radius:9px}
-.tag{display:inline-block;background:#0e1626;border:1px solid var(--line);border-radius:6px;
-  padding:2px 8px;font-size:12px;color:var(--acc);margin-left:6px}
-.warn{color:#e0a44a;font-size:12px;margin-top:14px}
-a{color:var(--acc)}
-</style></head><body><div class=wrap>
-<h1>ECG1.2 — дигитайзер ЭКГ <span class=tag>demo</span></h1>
-<p class=sub>Картинка бумажной ЭКГ → цифровой сигнал. Не медицинское изделие.</p>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0f17; --bg2:#111827; --card:#151d2b; --line:#243044;
+  --ink:#e8eef7; --mut:#8b9ab1; --acc:#22d3a5; --acc2:#38bdf8;
+  --warn:#fbbf24; --err:#f87171;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#f5f7fa;--bg2:#fff;--card:#fff;--line:#e3e8f0;--ink:#0f172a;--mut:#64748b}
+}
+body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  background:var(--bg);color:var(--ink);min-height:100vh}
+.wrap{max-width:1060px;margin:0 auto;padding:32px 20px 60px}
 
-<form class=card method=post action="/digitize" enctype="multipart/form-data" onsubmit="go(this)">
-  <div class=row>
-    <div><label>Картинка ЭКГ (jpg/png)</label>
-      <input type=file name=image accept="image/*" required></div>
-    <div><label>Формат раскладки</label>
-      <select name=template>
-        {% for val,txt in formats %}<option value="{{val}}">{{txt}}</option>{% endfor %}
-      </select></div>
-  </div>
-  <button type=submit>Оцифровать</button>
-  <div class=warn>Первый прогон — несколько секунд (препроцессинг). Если авто-формат
-    промахнётся — выбери формат вручную.</div>
+header{display:flex;align-items:center;gap:14px;margin-bottom:6px}
+.logo{width:42px;height:42px;border-radius:11px;flex:0 0 42px;
+  background:linear-gradient(135deg,var(--acc),var(--acc2));
+  display:grid;place-items:center;color:#04121b}
+h1{font-size:23px;font-weight:700;letter-spacing:-.02em}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--acc);border:1px solid var(--acc);
+  border-radius:5px;padding:1px 7px;vertical-align:3px;margin-left:9px}
+.sub{color:var(--mut);font-size:14px;margin:0 0 26px 56px}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+  padding:22px;margin-bottom:20px}
+
+.drop{display:block;border:2px dashed var(--line);border-radius:13px;
+  padding:34px 20px;text-align:center;cursor:pointer;transition:.15s;background:var(--bg2)}
+.drop:hover,.drop.over{border-color:var(--acc)}
+.drop svg{opacity:.45;margin-bottom:10px}
+.drop b{display:block;font-size:16px;margin-bottom:4px}
+.drop span{color:var(--mut);font-size:13px}
+.drop.has{border-style:solid;border-color:var(--acc)}
+input[type=file]{display:none}
+button{width:100%;margin-top:16px;background:var(--acc);color:#04121b;border:0;
+  border-radius:11px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;
+  transition:.15s;font-family:inherit}
+button:hover{filter:brightness(1.08)}
+button:disabled{opacity:.55;cursor:wait}
+.hint{color:var(--mut);font-size:12.5px;margin-top:12px;text-align:center}
+.busy{display:none;text-align:center;padding:14px 0 2px}
+.busy.on{display:block}
+.spin{width:26px;height:26px;border:3px solid var(--line);border-top-color:var(--acc);
+  border-radius:50%;margin:0 auto 10px;animation:s .8s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+
+.head{display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:12px;margin-bottom:18px}
+h2{font-size:18px;font-weight:700}
+.badges{display:flex;gap:8px;flex-wrap:wrap}
+.badge{font-size:12px;font-weight:600;padding:4px 11px;border-radius:99px;
+  background:var(--bg2);border:1px solid var(--line);color:var(--mut)}
+.badge.ok{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 40%,transparent)}
+.badge.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+
+figure{margin-bottom:20px}
+figcaption{font-size:13px;color:var(--mut);margin-bottom:9px}
+figcaption b{color:var(--ink);font-weight:600;font-size:13.5px}
+.imgbox{background:#fff;border:1px solid var(--line);border-radius:11px;
+  padding:8px;overflow-x:auto}
+.imgbox img{width:100%;min-width:660px;display:block;border-radius:5px}
+
+.leads{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:8px}
+.lead{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+.lead .n{font-size:12px;font-weight:700}
+.lead .v{font-size:11px;color:var(--mut);margin-top:1px}
+.bar{height:3px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--acc);border-radius:2px}
+.lead.low .bar i{background:var(--warn)}
+
+details{margin-top:8px}
+summary{cursor:pointer;color:var(--mut);font-size:13px;padding:9px 0;
+  list-style:none;user-select:none}
+summary::-webkit-details-marker{display:none}
+summary:before{content:"▸";display:inline-block;margin-right:6px;transition:.15s}
+details[open] summary:before{transform:rotate(90deg)}
+summary:hover{color:var(--ink)}
+
+.err{background:color-mix(in srgb,var(--err) 12%,var(--card));
+  border-color:color-mix(in srgb,var(--err) 35%,transparent)}
+.err b{display:block;margin-bottom:5px;font-size:15px;color:var(--err)}
+.files{font-size:12.5px;color:var(--mut);margin-top:16px;
+  padding-top:15px;border-top:1px solid var(--line)}
+.files code{background:var(--bg2);padding:2px 7px;border-radius:5px;
+  font-size:12px;color:var(--ink)}
+footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-height:1.8}
+</style></head><body><div class=wrap>
+
+<header>
+  <div class=logo><svg width=24 height=24 viewBox="0 0 24 24" fill=none
+    stroke=currentColor stroke-width=2.2 stroke-linecap=round stroke-linejoin=round>
+    <path d="M2 12h4l2-7 4 14 3-9 2 2h5"/></svg></div>
+  <h1>ECG1.2<span class=tag>demo</span></h1>
+</header>
+<p class=sub>Фотография бумажной ЭКГ → цифровой сигнал 12 отведений</p>
+
+<form class=card method=post action="/digitize" enctype="multipart/form-data" id=f>
+  <label class=drop id=drop>
+    <input type=file name=image accept="image/*" required id=file>
+    <svg width=34 height=34 viewBox="0 0 24 24" fill=none stroke=currentColor
+      stroke-width=1.6 stroke-linecap=round><path d="M12 16V4m0 0L7 9m5-5 5 5"/>
+      <path d="M3 15v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4"/></svg>
+    <b id=dropTitle>Выбери фото ЭКГ</b>
+    <span id=dropSub>или перетащи сюда · JPG, PNG · фото, скан, снимок экрана</span>
+  </label>
+  <button type=submit id=go>Оцифровать</button>
+  <div class=busy id=busy><div class=spin></div>
+    <span style="color:var(--mut);font-size:13px">Обрабатываю — обычно 1–2 минуты…</span></div>
+  <div class=hint>Раскладка (3×4, 6×2, 12×1, 6×1 и др.) определяется автоматически</div>
 </form>
 
-{% if error %}<div class="card err">{{error}}</div>{% endif %}
+{% if error %}<div class="card err"><b>Не получилось</b>{{error}}</div>{% endif %}
 
-{% if result %}
+{% if r %}
 <div class=card>
-  <h3 style="margin:0 0 12px">Результат <span class=tag>{{result.template}}</span></h3>
-  <div class=imgs>
-    <figure><figcaption>Цифровая ЭКГ (реконструкция)</figcaption>
-      <img src="/img/{{result.run}}/output/digital_ecg.png"></figure>
-    <figure><figcaption>Разметка отведений (overlay)</figcaption>
-      <img src="/img/{{result.run}}/layout/overlay.png"></figure>
-    <figure><figcaption>Сигналы по отведениям</figcaption>
-      <img src="/img/{{result.run}}/vectorize/preview.png"></figure>
+  <div class=head>
+    <h2>Результат</h2>
+    <div class=badges>
+      <span class="badge {{'ok' if r.cost < 0.3 else 'warn'}}">{{r.layout}}</span>
+      <span class="badge {{'ok' if r.n_leads == 12 else 'warn'}}">{{r.n_leads}} из 12 отведений</span>
+      <span class=badge>{{r.secs}} с</span>
+    </div>
   </div>
-  <div class=cov>Покрытие: {{result.cov}}</div>
-  <div class=cov>WFDB: <code>{{result.run}}/output/ecg_reconstructed.dat</code></div>
+
+  <figure>
+    <figcaption><b>Цифровая ЭКГ</b> — восстановлена из фото · 25 мм/с · 10 мм/мВ</figcaption>
+    <div class=imgbox><img src="/img/{{r.run}}/digital_ecg.png" alt="цифровая ЭКГ"></div>
+  </figure>
+
+  <figcaption style="margin-bottom:10px"><b>Качество по отведениям</b>
+    — какую долю сигнала удалось прочитать</figcaption>
+  <div class=leads>
+    {% for name, pct in r.leads %}
+    <div class="lead {{'low' if pct < 60 else ''}}">
+      <div class=n>{{name}}</div><div class=v>{{pct}}%</div>
+      <div class=bar><i style="width:{{pct}}%"></i></div>
+    </div>{% endfor %}
+  </div>
+
+  <details>
+    <summary>Показать, что машина увидела на фото</summary>
+    <div class=imgbox style="margin-top:10px">
+      <img src="/img/{{r.run}}/engine.png" alt="разбор фото"></div>
+  </details>
+
+  <div class=files>
+    Файлы: <code>output/web/{{r.run}}/</code> — сигнал <code>signal.csv</code>,
+    картинка <code>digital_ecg.png</code>
+  </div>
 </div>
 {% endif %}
 
+<footer>
+  Движок: <b>Open-ECG-Digitizer</b> — U-Net, обучен на реальных фото ЭКГ<br>
+  Учебно-демонстрационный инструмент. <b>Не медицинское изделие</b> — не для диагностики.
+</footer>
+
 <script>
-function go(f){var b=f.querySelector('button');b.disabled=true;b.textContent='Обрабатываю…';}
+const file=document.getElementById('file'), drop=document.getElementById('drop');
+file.onchange=()=>{if(file.files[0]){drop.classList.add('has');
+  document.getElementById('dropTitle').textContent=file.files[0].name;
+  document.getElementById('dropSub').textContent='готово к оцифровке';}};
+['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{
+  ev.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{
+  ev.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',ev=>{file.files=ev.dataTransfer.files;
+  file.dispatchEvent(new Event('change'))});
+document.getElementById('f').onsubmit=()=>{
+  const b=document.getElementById('go');
+  b.disabled=true;b.textContent='Обрабатываю…';
+  document.getElementById('busy').classList.add('on')};
 </script>
 </div></body></html>
 """
 
 
+def _page(error=None, r=None):
+    return render_template_string(PAGE, error=error, r=r)
+
+
 @app.route("/")
 def index():
-    return render_template_string(PAGE, formats=FORMATS, result=None, error=None)
+    return _page()
 
 
 @app.route("/digitize", methods=["POST"])
-def digitize():
+def digitize_route():
     f = request.files.get("image")
-    template = request.form.get("template", "auto")
-    if not f or f.filename == "":
-        return render_template_string(PAGE, formats=FORMATS, result=None,
-                                      error="Файл не выбран")
-    ext = Path(f.filename).suffix.lower() or ".png"
-    up = UPLOADS / f"{uuid.uuid4().hex}{ext}"
-    f.save(str(up))
-    # Проверим, что картинку вообще можно прочитать (HEIC/иные форматы OpenCV не берёт).
-    import cv2
-    if cv2.imread(str(up)) is None:
-        return render_template_string(
-            PAGE, formats=FORMATS, result=None,
-            error="Не удалось прочитать картинку. Используй JPG или PNG "
-                  "(HEIC/иные форматы не поддерживаются — сконвертируй в JPG).")
+    if not f or not f.filename:
+        return _page(error="Файл не выбран.")
+
+    run = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:4]
+    run_dir = RUNS / run
+    run_dir.mkdir(parents=True, exist_ok=True)
+    src = run_dir / ("upload" + (Path(f.filename).suffix.lower() or ".png"))
+    f.save(str(src))
+
     try:
-        out_json = run_pipeline(str(up), str(ROOT / "configs" / "pipeline.yml"),
-                                template=(None if template == "auto" else template),
-                                fast=True)
-        d = {}
-        try:
-            with open(out_json, encoding="utf-8") as fp:
-                d = json.load(fp)
-        except Exception:
-            d = {}                          # пайплайн вернул не JSON (все стадии деградировали)
-        if not d.get("digital_ecg"):
-            hint = "Попробуй выбрать формат вручную из списка" if template == "auto" \
-                else "Проверь, что выбран правильный формат, или попробуй другое фото"
-            raise RuntimeError("не удалось распознать раскладку ЭКГ. " + hint)
-        run = Path(out_json).parent.parent.name
-        lay = d.get("layout", {})
-        cov = d.get("coverage", {})
-        cov_txt = ", ".join(f"{k} {int(v*100)}%" for k, v in cov.items()) or "—"
-        result = {"run": run, "template": lay.get("template", template), "cov": cov_txt}
-        return render_template_string(PAGE, formats=FORMATS, result=result, error=None)
+        import cv2
+        if cv2.imread(str(src), cv2.IMREAD_UNCHANGED) is None:
+            raise RuntimeError("Не удалось прочитать картинку. Нужен JPG или PNG "
+                               "(HEIC не поддерживается — сконвертируй в JPG).")
+
+        t0 = datetime.now()
+        engine_out = run_dir / "engine"
+        digitize(str(src), str(engine_out))
+        secs = int((datetime.now() - t0).total_seconds())
+
+        csvs = list(engine_out.glob("*_timeseries_canonical.csv"))
+        if not csvs:
+            raise RuntimeError("Не удалось прочитать ЭКГ на этом снимке. Попробуй кадр, "
+                               "где плёнка видна целиком, без сильного наклона и смаза.")
+        shutil.copy2(csvs[0], run_dir / "signal.csv")
+
+        pngs = list(engine_out.glob("*.png"))
+        if pngs:
+            shutil.copy2(pngs[0], run_dir / "engine.png")
+
+        layout, cost = "формат не определён", 1.0
+        meta = engine_out / "digitization_metadata.csv"
+        if meta.exists():
+            last = meta.read_text(encoding="utf-8").strip().split("\n")[-1].split(",")
+            if len(last) >= 4:
+                cost = float(last[1])
+                layout = "формат не определён" if last[3] == "Unknown layout" else last[3]
+
+        render(str(csvs[0]), str(run_dir / "digital_ecg.png"))
+
+        sig, names = load_csv(str(csvs[0]))
+        cov = coverage(sig, names)
+        leads = [(n, int(round(100 * c))) for n, c in cov.items()]
+        n_leads = sum(1 for c in cov.values() if c > 0.05)
+
+        (run_dir / "result.json").write_text(json.dumps(
+            {"layout": layout, "cost": cost, "coverage": cov, "seconds": secs},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+
+        return _page(r={"run": run, "layout": layout, "cost": cost, "leads": leads,
+                        "n_leads": n_leads, "secs": secs})
     except Exception as exc:
-        return render_template_string(PAGE, formats=FORMATS, result=None,
-                                      error=f"{exc}")
+        app.logger.error("digitize failed: %s", traceback.format_exc())
+        return _page(error=str(exc))
 
 
-@app.route("/img/<run>/<stage>/<name>")
-def img(run, stage, name):
-    # Отдаём картинки из output/runs с защитой от выхода за пределы каталога.
-    p = (ROOT / "output" / "runs" / run / stage / name).resolve()
-    base = (ROOT / "output" / "runs").resolve()
-    if base not in p.parents or not p.exists():
+@app.route("/img/<run>/<name>")
+def img(run, name):
+    p = (RUNS / run / name).resolve()
+    if RUNS.resolve() not in p.parents or not p.exists():
         abort(404)
     return send_file(str(p))
 
 
 if __name__ == "__main__":
-    print("ECG1.2 service -> http://127.0.0.1:5000")
+    print("ECG1.2 -> http://127.0.0.1:5000")
     app.run(host="127.0.0.1", port=5000, debug=False)

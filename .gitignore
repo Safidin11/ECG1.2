@@ -33,3 +33,6 @@ data/samples/native_input/
 # IDE
 .vscode/
 .idea/
+
+# внешний движок и его веса (качаются отдельно, см. README)
+/external/Open-ECG-Digitizer/
