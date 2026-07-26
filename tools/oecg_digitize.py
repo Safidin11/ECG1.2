@@ -41,9 +41,14 @@ def prepare_image(src: str, dst: Path, target_w: int = TARGET_W) -> tuple[int, i
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     elif img.shape[2] == 4:
         img = img[:, :, :3]
-    if img.shape[1] > target_w:                      # ужать крупное фото
+    # Привести ширину к target_w в ОБЕ стороны. Увеличение мелких снимков —
+    # не косметика: на 1000 px линия отведения толщиной в пиксель, и сеть
+    # относит слабые/плоские отведения к фону (замерено: aVF/V3/V6 = 0%
+    # против 24-25% после увеличения до 2000 px).
+    if abs(img.shape[1] - target_w) > 2:
         h = int(round(img.shape[0] * target_w / img.shape[1]))
-        img = cv2.resize(img, (target_w, h), interpolation=cv2.INTER_AREA)
+        interp = cv2.INTER_CUBIC if img.shape[1] < target_w else cv2.INTER_AREA
+        img = cv2.resize(img, (target_w, h), interpolation=interp)
     cv2.imwrite(str(dst), img)
     return img.shape[1], img.shape[0]
 
