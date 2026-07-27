@@ -27,6 +27,14 @@ OECG_PY = OECG_DIR / ".venv" / "bin" / "python"
 TARGET_W = 2000          # ширина входа
 RESAMPLE = 1800          # внутренний размер U-Net: главный рычаг ПАМЯТИ (их дефолт 3000 под GPU)
 
+# Пороги их SignalExtractor. Их значения по умолчанию (10 / 0.1 / 0.95) заточены
+# под чистые сканы: короткие обрывки трассы удаляются целиком, а линия должна
+# на 95% лежать внутри маски. На фото трасса рвётся на плоских участках (сеть
+# принимает ровную линию за фон), и эти правила добивают то, что она всё-таки
+# нашла. Замер на 12x1: средняя потеря сигнала 17.9% -> 12.6%, на чистых
+# снимках без регрессий (IMG_4074: 1.3% -> 0.5%).
+EXTRACTOR = {"threshold_sum": 1.0, "label_thresh": 0.05, "threshold_line_in_mask": 0.75}
+
 
 def prepare_image(src: str, dst: Path, target_w: int = TARGET_W) -> tuple[int, int]:
     """Привести любое фото к тому, что движок точно съест: 8-бит BGR, ~target_w."""
@@ -59,7 +67,7 @@ CONFIG_TEMPLATE = """MODEL:
     config:
       SIGNAL_EXTRACTOR:
         class_path: 'src.model.signal_extractor.SignalExtractor'
-        KWARGS: {{}}
+        KWARGS: {extractor_kwargs}
       PERSPECTIVE_DETECTOR:
         class_path: 'src.model.perspective_detector.PerspectiveDetector'
         KWARGS:
@@ -117,6 +125,13 @@ DATA:
 LAYOUTS_YML = Path(__file__).resolve().parent.parent / "configs" / "oecg_layouts.yml"
 
 
+def _yaml_inline(d: dict | None) -> str:
+    """dict -> inline-YAML для KWARGS ({} если пусто)."""
+    if not d:
+        return "{}"
+    return "{" + ", ".join(f"{k}: {v}" for k, v in d.items()) + "}"
+
+
 def layout_names() -> list[str]:
     """Имена доступных раскладок (в порядке из configs/oecg_layouts.yml)."""
     import re
@@ -148,11 +163,15 @@ def digitize(input_path: str, out_dir: str,
              layouts: str | None = None,
              resample: int = RESAMPLE, target_w: int = TARGET_W,
              threads: int = 4, device: str = "auto",
-             layout: str | None = None, rotate: bool = False) -> Path:
+             layout: str | None = None, rotate: bool = False,
+             extractor: dict | None = None) -> Path:
     """Оцифровать одно фото внешним движком. Возвращает папку с результатом.
 
     layout — задать формат ЖЁСТКО (имя из layout_names()); None = пусть
     определяет сам по всему списку.
+    extractor — параметры их SignalExtractor; None = наши EXTRACTOR (мягче их
+    умолчаний), {} = их умолчания. Их загрузчик делает SignalExtractor(**KWARGS),
+    поэтому пороги задаются из НАШЕГО конфига без правки их кода.
     rotate — их rotate_on_resample: разворачивает КАЖДОЕ фото, где высота
     больше ширины. Для вертикальных ЭКГ (12x1 — 12 строк) это ломает разбор,
     поэтому по умолчанию выключено: доверяем ориентации снимка.
@@ -182,7 +201,9 @@ def digitize(input_path: str, out_dir: str,
         cfg = tmp / "cfg.yml"
         cfg.write_text(CONFIG_TEMPLATE.format(layouts=lay_path, in_dir=in_dir, out_dir=out,
                                               resample=resample, device=device,
-                                              rotate=str(bool(rotate)).lower()))
+                                              rotate=str(bool(rotate)).lower(),
+                                              extractor_kwargs=_yaml_inline(
+                                                  EXTRACTOR if extractor is None else extractor)))
         env = {**os.environ, "OMP_NUM_THREADS": str(threads),
                "MKL_NUM_THREADS": str(threads)}
         proc = subprocess.run(
