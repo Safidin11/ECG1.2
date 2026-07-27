@@ -59,17 +59,20 @@ def grid_for(layout_name: str, cov: dict[str, float] | None = None):
 
 
 def render(csv_path: str, out_png: str, grid=None, cols: int | None = None,
-           layout: str | None = None) -> str:
+           layout: str | None = None, sig=None, leads=None) -> str:
     """Нарисовать цифровую ЭКГ из CSV движка.
 
     layout — имя формата движка; тогда сетка берётся из него (иначе рендер
     рисует стандартную 3×4+ритм независимо от реального формата снимка).
+    sig/leads — уже готовый сигнал (напр. после восстановления по связям
+    отведений); тогда csv_path не читается.
     """
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from render_digital_ecg import render as render_signal      # noqa: E402
 
-    sig, leads = load_csv(csv_path)
+    if sig is None:
+        sig, leads = load_csv(csv_path)
     if grid is None and layout:
         grid, cols = grid_for(layout, coverage(sig, leads))
     # наш рендер ждёт .npy (N,12) в мВ и порядок LEAD_ORDER

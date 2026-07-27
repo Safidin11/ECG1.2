@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from oecg_digitize import digitize                      # noqa: E402
 from oecg_render import coverage, load_csv, render      # noqa: E402
+from ecg_leads import consistency, reconstruct_limb   # noqa: E402
 
 # Формат ЭКГ: имя раскладки движка -> понятная подпись. Первый пункт — авто.
 FORMATS = [
@@ -136,6 +137,9 @@ figcaption b{color:var(--ink);font-weight:600;font-size:13.5px}
 .bar{height:3px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--acc);border-radius:2px}
 .lead.low .bar i{background:var(--warn)}
+.note{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--acc);
+  border-radius:8px;padding:11px 14px;margin-bottom:18px;font-size:13px;color:var(--mut)}
+.note b{color:var(--ink)}
 
 details{margin-top:8px}
 summary{cursor:pointer;color:var(--mut);font-size:13px;padding:9px 0;
@@ -197,6 +201,8 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     <div class=badges>
       <span class="badge {{'ok' if r.manual or r.cost < 0.3 else 'warn'}}">{{r.layout}}{{'  · вручную' if r.manual else ''}}</span>
       <span class="badge {{'ok' if r.n_leads == 12 else 'warn'}}">{{r.n_leads}} из 12 отведений</span>
+      <span class="badge {{'ok' if r.resid_ok else 'warn'}}"
+        title="Отведения от конечностей связаны формулами (II = I + III и др.). Насколько оцифровка им противоречит: чем меньше, тем достовернее.">сходимость {{r.resid_txt}}</span>
       <span class=badge>{{r.secs}} с</span>
     </div>
   </div>
@@ -205,6 +211,11 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     <figcaption><b>Цифровая ЭКГ</b> — восстановлена из фото · 25 мм/с · 10 мм/мВ</figcaption>
     <div class=imgbox><img src="/img/{{r.run}}/digital_ecg.png" alt="цифровая ЭКГ"></div>
   </figure>
+
+  {% if r.filled %}
+  <div class=note>Восстановлено <b>{{r.filled_sec}} с</b> сигнала в отведениях от конечностей —
+    вычислено по связям между ними (II = I + III, aVR + aVL + aVF = 0), а не дорисовано.</div>
+  {% endif %}
 
   <figcaption style="margin-bottom:10px"><b>Качество по отведениям</b>
     — какую долю сигнала удалось прочитать</figcaption>
@@ -310,22 +321,34 @@ def digitize_route():
         if chosen:                       # формат задан вручную — показываем его подпись
             layout, cost = FORMAT_LABEL[chosen], 0.0
 
-        render(str(csvs[0]), str(run_dir / "digital_ecg.png"),
-               layout=(chosen or layout_key))
-
         sig, names = load_csv(str(csvs[0]))
+        cov_before = coverage(sig, names)
+        check = consistency(sig, names)
+        sig, rep = reconstruct_limb(sig, names)      # дыры в отв. от конечностей
+        filled = sum(rep["filled"].values())
+
+        render(str(csvs[0]), str(run_dir / "digital_ecg.png"),
+               layout=(chosen or layout_key), sig=sig, leads=names)
+
         cov = coverage(sig, names)
         leads = [(n, int(round(100 * c))) for n, c in cov.items()]
         n_leads = sum(1 for c in cov.values() if c > 0.05)
 
         (run_dir / "result.json").write_text(json.dumps(
             {"layout": layout, "chosen": chosen or None, "cost": cost,
-             "coverage": cov, "seconds": secs},
+             "coverage": cov, "coverage_before": cov_before, "seconds": secs,
+             "consistency": check, "reconstructed": rep["filled"]},
             ensure_ascii=False, indent=2), encoding="utf-8")
 
+        resid = check.get("residual")
         return _page(sel=chosen, r={"run": run, "layout": layout, "cost": cost,
                                     "leads": leads, "n_leads": n_leads, "secs": secs,
-                                    "manual": bool(chosen)})
+                                    "manual": bool(chosen),
+                                    "filled": filled, "filled_sec": round(filled / 1000.0, 1),
+                                    "resid": resid,
+                                    "resid_ok": (resid is not None and resid < 0.15),
+                                    "resid_txt": (f"{100*resid:.0f}%" if resid is not None
+                                                  else "нет данных")})
     except Exception as exc:
         app.logger.error("digitize failed: %s", traceback.format_exc())
         return _page(error=str(exc), sel=chosen)
