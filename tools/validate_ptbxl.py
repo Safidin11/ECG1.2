@@ -36,13 +36,15 @@ from pathlib import Path
 
 import numpy as np
 import wfdb
-from scipy.signal import butter, correlate, filtfilt, find_peaks, resample_poly
+from scipy.signal import correlate, resample_poly
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import oecg_digitize as od          # noqa: E402
 import render_digital_ecg as rd     # noqa: E402
+from ecg_measure import heart_rate as measure_hr   # noqa: E402
+from ecg_measure import longest_run                # noqa: E402
 from oecg_render import load_csv    # noqa: E402
 
 LEAD_ORDER = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
@@ -108,42 +110,11 @@ def compare_lead(ours: np.ndarray, truth: np.ndarray) -> dict | None:
     }
 
 
-def longest_run(col: np.ndarray) -> tuple[int, int] | None:
-    """Самый длинный непрерывный кусок без пропусков."""
-    ok = ~np.isnan(col)
-    if not ok.any():
-        return None
-    d = np.diff(np.concatenate([[0], ok.view(np.int8), [0]]))
-    starts, ends = np.flatnonzero(d == 1), np.flatnonzero(d == -1)
-    k = int(np.argmax(ends - starts))
-    return int(starts[k]), int(ends[k])
-
-
 def heart_rate(x: np.ndarray, fs: int) -> float | None:
-    """ЧСС по R-зубцам, схема Пана-Томпкинса.
-
-    Модуль сигнала брать нельзя: у комплекса с глубоким S получается два пика
-    вместо одного и частота удваивается. Поэтому полоса 5–15 Гц (там живёт QRS
-    и почти нет ни зубца T, ни дрейфа), производная, квадрат и скользящее окно —
-    остаются ровно всплески комплексов.
-    """
-    span = longest_run(np.asarray(x, float))
-    if span is None:
-        return None
-    seg = np.asarray(x, float)[span[0]:span[1]]
-    if len(seg) < 3 * fs:
-        return None
-    b, a = butter(3, [5.0 / (fs / 2), 15.0 / (fs / 2)], btype="band")
-    y = filtfilt(b, a, seg - np.median(seg))
-    y = np.diff(y, prepend=y[0]) ** 2
-    w = max(1, int(0.15 * fs))
-    y = np.convolve(y, np.ones(w) / w, mode="same")
-    pk, _ = find_peaks(y, height=0.3 * np.percentile(y, 98), distance=int(0.28 * fs))
-    if len(pk) < 3:
-        return None
-    rr = np.diff(pk) / fs
-    rr = rr[(rr > 0.3) & (rr < 2.0)]           # 30–200 уд/мин
-    return float(60.0 / np.median(rr)) if len(rr) >= 2 else None
+    """ЧСС, уд/мин. Считает тот же код, что и на сайте — иначе проверка
+    перестала бы что-либо значить (tools/ecg_measure.py)."""
+    r = measure_hr(x, fs)
+    return float(r["bpm"]) if r else None
 
 
 def run_one(hea: Path, work: Path) -> dict | None:

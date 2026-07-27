@@ -28,6 +28,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 from oecg_digitize import digitize                      # noqa: E402
 from oecg_render import coverage, load_csv, render      # noqa: E402
 from ecg_leads import consistency, reconstruct_limb   # noqa: E402
+from ecg_measure import best_lead, heart_rate         # noqa: E402
+from oecg_render import FS                            # движок отдаёт 1000 Гц
 
 # Формат ЭКГ: имя раскладки движка -> понятная подпись. Первый пункт — авто.
 FORMATS = [
@@ -221,6 +223,11 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     <div class=badges>
       <span class="badge {{'ok' if r.manual or r.cost < 0.3 else 'warn'}}">{{r.layout}}{{'  · вручную' if r.manual else ''}}</span>
       <span class="badge {{'ok' if r.n_leads == 12 else 'warn'}}">{{r.n_leads}} из 12 отведений</span>
+      {% if r.hr %}
+      <span class="badge {{'ok' if r.hr.regular else 'warn'}}"
+        title="Считается по зубцам R на самом длинном непрерывном куске: {{r.hr.beats}} комплексов за {{r.hr.seconds}} с. Разброс интервалов {{r.hr.spread}}%.">
+        {{r.hr.bpm}} уд/мин{{'' if r.hr.regular else ' · ритм неровный'}}</span>
+      {% endif %}
       <span class="badge {{'ok' if r.resid_ok else 'warn'}}"
         title="Отведения от конечностей связаны формулами (II = I + III и др.). Насколько оцифровка им противоречит: чем меньше, тем достовернее.">сходимость {{r.resid_txt}}</span>
       <span class=badge>{{r.secs}} с</span>
@@ -369,10 +376,17 @@ def digitize_route():
         leads = [(n, int(round(100 * c))) for n, c in cov.items()]
         n_leads = sum(1 for c in cov.values() if c > 0.05)
 
+        # ЧСС считаем по отведению с самым длинным непрерывным куском: частота
+        # от отведения не зависит, а длина куска решает всё. Тот же код гоняет
+        # стенд на PTB-XL — там ошибка 0.1 уд/мин на 40 записях.
+        j = best_lead(sig, names)
+        hr = heart_rate(sig[:, j], FS) if j is not None else None
+
         (run_dir / "result.json").write_text(json.dumps(
             {"layout": layout, "chosen": chosen or None, "cost": cost,
              "coverage": cov, "coverage_before": cov_before, "seconds": secs,
-             "consistency": check, "reconstructed": rep["filled"]},
+             "consistency": check, "reconstructed": rep["filled"],
+             "heart_rate": hr, "hr_lead": (names[j] if j is not None else None)},
             ensure_ascii=False, indent=2), encoding="utf-8")
 
         resid = check.get("residual")
@@ -380,6 +394,7 @@ def digitize_route():
                                     "leads": leads, "n_leads": n_leads, "secs": secs,
                                     "manual": bool(chosen), "upload": src.name, "twin": has_twin, "stages": has_stages,
                                     "filled": filled, "filled_sec": round(filled / 1000.0, 1),
+                                    "hr": hr,
                                     "resid": resid,
                                     "resid_ok": (resid is not None and resid < 0.15),
                                     "resid_txt": (f"{100*resid:.0f}%" if resid is not None
