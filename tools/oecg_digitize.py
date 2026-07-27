@@ -213,12 +213,16 @@ def digitize(input_path: str, out_dir: str,
                                                   EXTRACTOR if extractor is None else extractor)))
         env = {**os.environ, "OMP_NUM_THREADS": str(threads),
                "MKL_NUM_THREADS": str(threads)}
+        # Свой обработчик вместо их src.digitize: тот же сигнал, плюс цифровая
+        # копия снимка (геометрия один в один). Сеть прогоняется ОДИН раз.
+        worker = Path(__file__).resolve().parent / "oecg_worker.py"
         proc = subprocess.run(
-            [str(OECG_PY), "-m", "src.digitize", "--config", str(cfg)],
+            [str(OECG_PY), str(worker), "-c", str(cfg),
+             "-i", str(in_dir / f"{name}.png"), "-o", str(out / name)],
             cwd=str(OECG_DIR), capture_output=True, text=True, env=env,
         )
         for line in proc.stdout.splitlines():
-            if "Layout" in line or "layout" in line or "Error" in line:
+            if any(k in line for k in ("Layout", "layout", "Error", "[twin]")):
                 print(f"[oecg] {line.strip()}")
         if proc.returncode != 0:
             raise RuntimeError(f"движок упал:\n{proc.stderr[-1500:]}")

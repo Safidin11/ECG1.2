@@ -221,14 +221,20 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
 
   <div class=compare>
     <figure>
-      <figcaption><b>Твоё фото</b> — что загрузили</figcaption>
-      <div class=imgbox><img src="/img/{{r.run}}/{{r.upload}}" alt="исходное фото"></div>
+      <figcaption><b>Твоё фото</b> — выровнено и обрезано</figcaption>
+      <div class=imgbox><img src="/img/{{r.run}}/{{'aligned.png' if r.twin else r.upload}}" alt="исходное фото"></div>
     </figure>
     <figure>
-      <figcaption><b>Цифровая ЭКГ</b> — 25 мм/с · 10 мм/мВ</figcaption>
-      <div class=imgbox><img src="/img/{{r.run}}/digital_ecg.png" alt="цифровая ЭКГ"></div>
+      <figcaption><b>Цифровая копия</b> — та же геометрия, линия из данных</figcaption>
+      <div class=imgbox><img src="/img/{{r.run}}/{{'twin.png' if r.twin else 'digital_ecg.png'}}" alt="цифровая копия"></div>
     </figure>
   </div>
+
+  <details>
+    <summary>Показать стандартную раскладку (25 мм/с · 10 мм/мВ)</summary>
+    <div class=imgbox style="margin-top:10px">
+      <img src="/img/{{r.run}}/digital_ecg.png" alt="стандартная раскладка"></div>
+  </details>
 
   {% if r.filled %}
   <div class=note>Восстановлено <b>{{r.filled_sec}} с</b> сигнала в отведениях от конечностей —
@@ -246,9 +252,9 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
   </div>
 
   <details>
-    <summary>Показать, что машина увидела на фото</summary>
+    <summary>Показать исходный снимок без обработки</summary>
     <div class=imgbox style="margin-top:10px">
-      <img src="/img/{{r.run}}/engine.png" alt="разбор фото"></div>
+      <img src="/img/{{r.run}}/{{r.upload}}" alt="исходный снимок"></div>
   </details>
 
   <div class=files>
@@ -324,9 +330,12 @@ def digitize_route():
                                "где плёнка видна целиком, без сильного наклона и смаза.")
         shutil.copy2(csvs[0], run_dir / "signal.csv")
 
-        pngs = list(engine_out.glob("*.png"))
-        if pngs:
-            shutil.copy2(pngs[0], run_dir / "engine.png")
+        for src_name, dst_name in (("*_twin.png", "twin.png"),
+                                   ("*_aligned.png", "aligned.png")):
+            found = list(engine_out.glob(src_name))
+            if found:
+                shutil.copy2(found[0], run_dir / dst_name)
+        has_twin = (run_dir / "twin.png").exists()
 
         layout, cost, layout_key = "формат не определён", 1.0, None
         meta = engine_out / "digitization_metadata.csv"
@@ -361,7 +370,7 @@ def digitize_route():
         resid = check.get("residual")
         return _page(sel=chosen, r={"run": run, "layout": layout, "cost": cost,
                                     "leads": leads, "n_leads": n_leads, "secs": secs,
-                                    "manual": bool(chosen), "upload": src.name,
+                                    "manual": bool(chosen), "upload": src.name, "twin": has_twin,
                                     "filled": filled, "filled_sec": round(filled / 1000.0, 1),
                                     "resid": resid,
                                     "resid_ok": (resid is not None and resid < 0.15),
