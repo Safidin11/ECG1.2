@@ -232,12 +232,6 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     <div class=imgbox><img src="/img/{{r.run}}/{{'twin.png' if r.twin else 'digital_ecg.png'}}" alt="цифровая копия"></div>
   </figure>
 
-  <details>
-    <summary>Показать стандартную раскладку (25 мм/с · 10 мм/мВ)</summary>
-    <div class=imgbox style="margin-top:10px">
-      <img src="/img/{{r.run}}/digital_ecg.png" alt="стандартная раскладка"></div>
-  </details>
-
   {% if r.filled %}
   <div class=note>Восстановлено <b>{{r.filled_sec}} с</b> сигнала в отведениях от конечностей —
     вычислено по связям между ними (II = I + III, aVR + aVL + aVF = 0), а не дорисовано.</div>
@@ -263,7 +257,7 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
 
   <div class=files>
     Файлы: <code>output/web/{{r.run}}/</code> — сигнал <code>signal.csv</code>,
-    картинка <code>digital_ecg.png</code>
+    картинка <code>{{'twin.png' if r.twin else 'digital_ecg.png'}}</code>
   </div>
 </div>
 {% endif %}
@@ -365,8 +359,11 @@ def digitize_route():
         sig, rep = reconstruct_limb(sig, names)      # дыры в отв. от конечностей
         filled = sum(rep["filled"].values())
 
-        render(str(csvs[0]), str(run_dir / "digital_ecg.png"),
-               layout=(chosen or layout_key), sig=sig, leads=names)
+        # Цифровой копии достаточно. Стандартную раскладку рисуем только как
+        # запасной вариант — когда копию построить не удалось (нет линий).
+        if not has_twin:
+            render(str(csvs[0]), str(run_dir / "digital_ecg.png"),
+                   layout=(chosen or layout_key), sig=sig, leads=names)
 
         cov = coverage(sig, names)
         leads = [(n, int(round(100 * c))) for n, c in cov.items()]

@@ -40,8 +40,7 @@ GRID_MINOR = (250, 220, 220)     # #F9D8D8 при 90% поверх бумаги,
 GRID_MAJOR = (240, 170, 170)     # #F0AAAA, 5 мм
 TRACE = (17, 17, 17)             # #111111
 LABEL = (58, 58, 58)             # #3A3A3A
-SEP = (213, 213, 213)            # #D5D5D5
-SEP_ALPHA = 128                  # 50%
+SEP = (196, 199, 204)            # границы отведений — заметные, но спокойные
 SS = 3                           # суперсэмплинг: трасса рисуется крупнее и
                                  # усредняется — отсюда сглаженные края
 
@@ -217,27 +216,29 @@ def draw_twin(arr: np.ndarray, box, shape, mm_px_x: float, mm_px_y: float,
         span = max(1, len(row) // (ncols * 6))
         return [(a, b) for a, b in zip(starts, ends) if b - a >= span]
 
-    col_w = (cx1 - cx0) / max(ncols, 1)      # запасной вариант
+    col_w = (cx1 - cx0) / max(ncols, 1)
 
-    # --- границы между отведениями: по разрывам, усреднённым по строкам ---
+    # --- границы между отведениями ---
+    # Ищем по разрывам линий: на плёнке между отведениями всегда есть промежуток.
+    # Разрывы бывают и внутри отведения (сеть потеряла кусок), поэтому берём не
+    # все подряд, а те, что легли рядом с ожидаемой границей колонки, и по ним
+    # считаем медиану — случайные обрывы её не сдвигают. Если рядом ничего нет,
+    # граница остаётся ровно по расчёту.
     seps = []
     if ncols > 1:
-        per_row = [runs_of(r) for r in arr]
-        good = [rr for rr in per_row if len(rr) == ncols]
-        if good:
-            for c in range(1, ncols):
-                seps.append(int(round(np.mean([(rr[c - 1][1] + rr[c][0]) / 2
-                                               for rr in good]) - x0)))
-        else:
-            seps = [int(round(cx0 + c * col_w)) for c in range(1, ncols)]
-        # Тонкие сплошные направляющие: помогают читать, но не лезут в глаза.
-        veil = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        dv = ImageDraw.Draw(veil)
+        cand = []
+        for r in arr:
+            rr = runs_of(r)
+            cand += [(rr[k - 1][1] + rr[k][0]) / 2.0 - x0 for k in range(1, len(rr))]
+        for c in range(1, ncols):
+            want = cx0 + c * col_w
+            near = [m for m in cand if abs(m - want) < 0.35 * col_w]
+            seps.append(int(round(np.median(near) if near else want)))
+        top, bot = int(0.015 * H), H - int(0.015 * H)
+        # Не тоньше 2 px: на странице картинка ужимается по ширине, и волосяная
+        # линия при этом просто исчезает.
         for x in seps:
-            dv.line([(x, int(0.015 * H)), (x, H - int(0.015 * H))],
-                    fill=SEP + (SEP_ALPHA,), width=max(1, int(round(k_res))))
-        base = Image.alpha_composite(base.convert("RGBA"), veil).convert("RGB")
-        d = ImageDraw.Draw(base)
+            d.line([(x, top), (x, bot)], fill=SEP, width=max(2, int(round(1.5 * k_res))))
 
     # --- трасса и калибр-импульс: маска в SS раз крупнее -> усреднение ---
     ink = Image.new("L", (W * SS, H * SS), 0)
@@ -296,13 +297,11 @@ def draw_twin(arr: np.ndarray, box, shape, mm_px_x: float, mm_px_y: float,
         for i, row in enumerate(arr):
             names = lead_rows[i] if i < len(lead_rows) else [rhythm_name]
             n = len(names)
-            rr = runs_of(row)
-            if len(rr) == n:                       # куски совпали с числом отведений
-                bounds = [(a - x0, b - x0) for a, b in rr]
-            else:                                  # иначе — по общим границам
-                edges = [cx0] + seps + [cx1] if len(seps) == n - 1 else \
-                    [int(round(cx0 + k * (cx1 - cx0) / n)) for k in range(n + 1)]
-                bounds = [(edges[k], edges[k + 1]) for k in range(n)]
+            # Подписи делим ТЕМИ ЖЕ границами, что нарисованы, иначе имя и линия
+            # разъезжаются. Ритм-строка (n = 1) занимает всю ширину.
+            edges = [cx0] + seps + [cx1] if len(seps) == n - 1 else \
+                [int(round(cx0 + k * (cx1 - cx0) / n)) for k in range(n + 1)]
+            bounds = [(edges[k], edges[k + 1]) for k in range(n)]
             base_row = np.nanmedian(row)           # общая базовая линия строки
             for c, nm in enumerate(names):
                 xs0, xs1 = bounds[c]
