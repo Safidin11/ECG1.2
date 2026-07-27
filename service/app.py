@@ -134,9 +134,10 @@ figcaption b{color:var(--ink);font-weight:600;font-size:13.5px}
 .compare{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:20px}
 @media (max-width:1100px){.compare{grid-template-columns:1fr}}
 .compare figure{margin:0}
-.imgbox{background:#fff;border:1px solid var(--line);border-radius:11px;
-  padding:8px;overflow:auto;max-height:78vh}
-.imgbox img{width:100%;display:block;border-radius:5px}
+/* Картинки лежат прямо на странице: без внутренней прокрутки и обрезки по
+   высоте — страница скроллится целиком, как обычный документ. */
+.imgbox{background:#fff;border:1px solid var(--line);border-radius:11px;padding:8px}
+.imgbox img{width:100%;height:auto;display:block;border-radius:5px}
 
 .leads{display:grid;grid-template-columns:repeat(12,1fr);gap:8px}
 @media (max-width:1100px){.leads{grid-template-columns:repeat(6,1fr)}}
@@ -152,7 +153,6 @@ figcaption b{color:var(--ink);font-weight:600;font-size:13.5px}
 .note b{color:var(--ink)}
 .preview{display:none;grid-column:1/-1;margin-top:6px}
 .preview.on{display:block}
-.preview .imgbox{max-height:52vh}
 
 details{margin-top:8px}
 summary{cursor:pointer;color:var(--mut);font-size:13px;padding:9px 0;
