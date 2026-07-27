@@ -70,7 +70,7 @@ PAGE = """
 }
 body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   background:var(--bg);color:var(--ink);min-height:100vh}
-.wrap{max-width:1060px;margin:0 auto;padding:32px 20px 60px}
+.wrap{max-width:1560px;margin:0 auto;padding:28px 24px 56px}
 
 header{display:flex;align-items:center;gap:14px;margin-bottom:6px}
 .logo{width:42px;height:42px;border-radius:11px;flex:0 0 42px;
@@ -85,15 +85,19 @@ h1{font-size:23px;font-weight:700;letter-spacing:-.02em}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
   padding:22px;margin-bottom:20px}
 
-.drop{display:block;border:2px dashed var(--line);border-radius:13px;
-  padding:34px 20px;text-align:center;cursor:pointer;transition:.15s;background:var(--bg2)}
+.bar-form{display:grid;grid-template-columns:minmax(280px,1fr) 320px 190px;
+  gap:16px;align-items:end}
+@media (max-width:900px){.bar-form{grid-template-columns:1fr}}
+.drop{display:flex;align-items:center;gap:14px;border:2px dashed var(--line);
+  border-radius:12px;padding:15px 18px;cursor:pointer;transition:.15s;background:var(--bg2);
+  min-height:64px}
 .drop:hover,.drop.over{border-color:var(--acc)}
-.drop svg{opacity:.45;margin-bottom:10px}
-.drop b{display:block;font-size:16px;margin-bottom:4px}
-.drop span{color:var(--mut);font-size:13px}
+.drop svg{opacity:.45;flex:0 0 26px}
+.drop b{display:block;font-size:14.5px;margin-bottom:2px}
+.drop span{color:var(--mut);font-size:12.5px}
 .drop.has{border-style:solid;border-color:var(--acc)}
 input[type=file]{display:none}
-.field{margin-top:16px}
+.field{margin:0}
 .field label{display:block;font-size:12.5px;font-weight:600;color:var(--mut);
   margin-bottom:7px}
 select{width:100%;padding:12px 13px;border-radius:10px;border:1px solid var(--line);
@@ -102,13 +106,14 @@ select{width:100%;padding:12px 13px;border-radius:10px;border:1px solid var(--li
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%238b9ab1' stroke-width='1.8' d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 14px center}
 select:focus{outline:none;border-color:var(--acc)}
-button{width:100%;margin-top:16px;background:var(--acc);color:#04121b;border:0;
-  border-radius:11px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;
+button{width:100%;background:var(--acc);color:#04121b;border:0;
+  border-radius:10px;padding:13px;font-size:15px;font-weight:700;cursor:pointer;
   transition:.15s;font-family:inherit}
 button:hover{filter:brightness(1.08)}
 button:disabled{opacity:.55;cursor:wait}
 .hint{color:var(--mut);font-size:12.5px;margin-top:12px;text-align:center}
-.busy{display:none;text-align:center;padding:14px 0 2px}
+.busy{display:none;grid-column:1/-1;text-align:center;padding:8px 0 0;
+  color:var(--mut);font-size:13px}
 .busy.on{display:block}
 .spin{width:26px;height:26px;border:3px solid var(--line);border-top-color:var(--acc);
   border-radius:50%;margin:0 auto 10px;animation:s .8s linear infinite}
@@ -126,11 +131,16 @@ h2{font-size:18px;font-weight:700}
 figure{margin-bottom:20px}
 figcaption{font-size:13px;color:var(--mut);margin-bottom:9px}
 figcaption b{color:var(--ink);font-weight:600;font-size:13.5px}
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:20px}
+@media (max-width:1100px){.compare{grid-template-columns:1fr}}
+.compare figure{margin:0}
 .imgbox{background:#fff;border:1px solid var(--line);border-radius:11px;
-  padding:8px;overflow-x:auto}
-.imgbox img{width:100%;min-width:660px;display:block;border-radius:5px}
+  padding:8px;overflow:auto;max-height:78vh}
+.imgbox img{width:100%;display:block;border-radius:5px}
 
-.leads{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:8px}
+.leads{display:grid;grid-template-columns:repeat(12,1fr);gap:8px}
+@media (max-width:1100px){.leads{grid-template-columns:repeat(6,1fr)}}
+@media (max-width:640px){.leads{grid-template-columns:repeat(3,1fr)}}
 .lead{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
 .lead .n{font-size:12px;font-weight:700}
 .lead .v{font-size:11px;color:var(--mut);margin-top:1px}
@@ -167,14 +177,14 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
 </header>
 <p class=sub>Фотография бумажной ЭКГ → цифровой сигнал 12 отведений</p>
 
-<form class=card method=post action="/digitize" enctype="multipart/form-data" id=f>
+<form class="card bar-form" method=post action="/digitize" enctype="multipart/form-data" id=f>
   <label class=drop id=drop>
     <input type=file name=image accept="image/*" required id=file>
-    <svg width=34 height=34 viewBox="0 0 24 24" fill=none stroke=currentColor
+    <svg width=26 height=26 viewBox="0 0 24 24" fill=none stroke=currentColor
       stroke-width=1.6 stroke-linecap=round><path d="M12 16V4m0 0L7 9m5-5 5 5"/>
       <path d="M3 15v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4"/></svg>
-    <b id=dropTitle>Выбери фото ЭКГ</b>
-    <span id=dropSub>или перетащи сюда · JPG, PNG · фото, скан, снимок экрана</span>
+    <div><b id=dropTitle>Выбери фото ЭКГ</b>
+      <span id=dropSub>или перетащи сюда · JPG, PNG</span></div>
   </label>
 
   <div class=field>
@@ -186,10 +196,12 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     </select>
   </div>
 
-  <button type=submit id=go>Оцифровать</button>
+  <div class=field>
+    <label>&nbsp;</label>
+    <button type=submit id=go>Оцифровать</button>
+  </div>
   <div class=busy id=busy><div class=spin></div>
-    <span style="color:var(--mut);font-size:13px">Обрабатываю — обычно 1–2 минуты…</span></div>
-  <div class=hint>Если авто-определение промахнулось — выбери формат вручную</div>
+    <span>Обрабатываю — обычно 1–2 минуты…</span></div>
 </form>
 
 {% if error %}<div class="card err"><b>Не получилось</b>{{error}}</div>{% endif %}
@@ -207,10 +219,16 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     </div>
   </div>
 
-  <figure>
-    <figcaption><b>Цифровая ЭКГ</b> — восстановлена из фото · 25 мм/с · 10 мм/мВ</figcaption>
-    <div class=imgbox><img src="/img/{{r.run}}/digital_ecg.png" alt="цифровая ЭКГ"></div>
-  </figure>
+  <div class=compare>
+    <figure>
+      <figcaption><b>Твоё фото</b> — что загрузили</figcaption>
+      <div class=imgbox><img src="/img/{{r.run}}/{{r.upload}}" alt="исходное фото"></div>
+    </figure>
+    <figure>
+      <figcaption><b>Цифровая ЭКГ</b> — 25 мм/с · 10 мм/мВ</figcaption>
+      <div class=imgbox><img src="/img/{{r.run}}/digital_ecg.png" alt="цифровая ЭКГ"></div>
+    </figure>
+  </div>
 
   {% if r.filled %}
   <div class=note>Восстановлено <b>{{r.filled_sec}} с</b> сигнала в отведениях от конечностей —
@@ -343,7 +361,7 @@ def digitize_route():
         resid = check.get("residual")
         return _page(sel=chosen, r={"run": run, "layout": layout, "cost": cost,
                                     "leads": leads, "n_leads": n_leads, "secs": secs,
-                                    "manual": bool(chosen),
+                                    "manual": bool(chosen), "upload": src.name,
                                     "filled": filled, "filled_sec": round(filled / 1000.0, 1),
                                     "resid": resid,
                                     "resid_ok": (resid is not None and resid < 0.15),
