@@ -218,7 +218,8 @@ def digitize(input_path: str, out_dir: str,
         worker = Path(__file__).resolve().parent / "oecg_worker.py"
         proc = subprocess.run(
             [str(OECG_PY), str(worker), "-c", str(cfg),
-             "-i", str(in_dir / f"{name}.png"), "-o", str(out / name)],
+             "-i", str(in_dir / f"{name}.png"), "-o", str(out / name),
+             "--layouts", str(LAYOUTS_YML)],
             cwd=str(OECG_DIR), capture_output=True, text=True, env=env,
         )
         for line in proc.stdout.splitlines():

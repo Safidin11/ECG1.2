@@ -150,6 +150,9 @@ figcaption b{color:var(--ink);font-weight:600;font-size:13.5px}
 .note{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--acc);
   border-radius:8px;padding:11px 14px;margin-bottom:18px;font-size:13px;color:var(--mut)}
 .note b{color:var(--ink)}
+.preview{display:none;grid-column:1/-1;margin-top:6px}
+.preview.on{display:block}
+.preview .imgbox{max-height:52vh}
 
 details{margin-top:8px}
 summary{cursor:pointer;color:var(--mut);font-size:13px;padding:9px 0;
@@ -202,6 +205,11 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
   </div>
   <div class=busy id=busy><div class=spin></div>
     <span>Обрабатываю — обычно 1–2 минуты…</span></div>
+
+  <div class=preview id=preview>
+    <figcaption><b>Выбранный снимок</b> — посмотри и определи формат, если авто ошибётся</figcaption>
+    <div class=imgbox><img id=previewImg alt="выбранный снимок"></div>
+  </div>
 </form>
 
 {% if error %}<div class="card err"><b>Не получилось</b>{{error}}</div>{% endif %}
@@ -219,16 +227,10 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     </div>
   </div>
 
-  <div class=compare>
-    <figure>
-      <figcaption><b>Твоё фото</b> — выровнено и обрезано</figcaption>
-      <div class=imgbox><img src="/img/{{r.run}}/{{'aligned.png' if r.twin else r.upload}}" alt="исходное фото"></div>
-    </figure>
-    <figure>
-      <figcaption><b>Цифровая копия</b> — та же геометрия, линия из данных</figcaption>
-      <div class=imgbox><img src="/img/{{r.run}}/{{'twin.png' if r.twin else 'digital_ecg.png'}}" alt="цифровая копия"></div>
-    </figure>
-  </div>
+  <figure>
+    <figcaption><b>Цифровая копия</b> — та же геометрия, что на снимке; линия построена по данным</figcaption>
+    <div class=imgbox><img src="/img/{{r.run}}/{{'twin.png' if r.twin else 'digital_ecg.png'}}" alt="цифровая копия"></div>
+  </figure>
 
   <details>
     <summary>Показать стандартную раскладку (25 мм/с · 10 мм/мВ)</summary>
@@ -251,11 +253,13 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     </div>{% endfor %}
   </div>
 
+  {% if r.stages %}
   <details>
-    <summary>Показать исходный снимок без обработки</summary>
+    <summary>Показать все этапы Open ECG Digitizer</summary>
     <div class=imgbox style="margin-top:10px">
-      <img src="/img/{{r.run}}/{{r.upload}}" alt="исходный снимок"></div>
+      <img src="/img/{{r.run}}/stages.png" alt="этапы движка"></div>
   </details>
+  {% endif %}
 
   <div class=files>
     Файлы: <code>output/web/{{r.run}}/</code> — сигнал <code>signal.csv</code>,
@@ -271,9 +275,14 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
 
 <script>
 const file=document.getElementById('file'), drop=document.getElementById('drop');
-file.onchange=()=>{if(file.files[0]){drop.classList.add('has');
-  document.getElementById('dropTitle').textContent=file.files[0].name;
-  document.getElementById('dropSub').textContent='готово к оцифровке';}};
+file.onchange=()=>{const f=file.files[0]; if(!f)return;
+  drop.classList.add('has');
+  document.getElementById('dropTitle').textContent=f.name;
+  document.getElementById('dropSub').textContent='готово к оцифровке';
+  const rd=new FileReader();
+  rd.onload=e=>{document.getElementById('previewImg').src=e.target.result;
+    document.getElementById('preview').classList.add('on');};
+  rd.readAsDataURL(f);};
 ['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{
   ev.preventDefault();drop.classList.add('over')}));
 ['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{
@@ -331,11 +340,13 @@ def digitize_route():
         shutil.copy2(csvs[0], run_dir / "signal.csv")
 
         for src_name, dst_name in (("*_twin.png", "twin.png"),
-                                   ("*_aligned.png", "aligned.png")):
+                                   ("*_aligned.png", "aligned.png"),
+                                   ("*_stages.png", "stages.png")):
             found = list(engine_out.glob(src_name))
             if found:
                 shutil.copy2(found[0], run_dir / dst_name)
         has_twin = (run_dir / "twin.png").exists()
+        has_stages = (run_dir / "stages.png").exists()
 
         layout, cost, layout_key = "формат не определён", 1.0, None
         meta = engine_out / "digitization_metadata.csv"
@@ -370,7 +381,7 @@ def digitize_route():
         resid = check.get("residual")
         return _page(sel=chosen, r={"run": run, "layout": layout, "cost": cost,
                                     "leads": leads, "n_leads": n_leads, "secs": secs,
-                                    "manual": bool(chosen), "upload": src.name, "twin": has_twin,
+                                    "manual": bool(chosen), "upload": src.name, "twin": has_twin, "stages": has_stages,
                                     "filled": filled, "filled_sec": round(filled / 1000.0, 1),
                                     "resid": resid,
                                     "resid_ok": (resid is not None and resid < 0.15),
