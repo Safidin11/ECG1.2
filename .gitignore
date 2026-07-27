@@ -36,3 +36,6 @@ data/samples/native_input/
 
 # внешний движок и его веса (качаются отдельно, см. README)
 /external/Open-ECG-Digitizer/
+
+# Открытая база PTB-XL — качается скриптом, в репозиторий не кладём
+data/ptbxl/

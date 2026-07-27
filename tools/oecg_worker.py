@@ -402,6 +402,10 @@ def main():
         cv2.imwrite(a.out_base + "_aligned.png", crop_pad(photo, box))
         print(f"[twin] копия {box[2]-box[0]}x{box[3]-box[1]}, линий={len(arr)}, "
               f"подписи={'да' if rows else 'нет'}")
+        # Масштаб определяет амплитуды в мВ: ошибка здесь линейно уходит в
+        # милливольты. Печатаем, чтобы её можно было сверить со стендом.
+        print(f"[twin] масштаб сетки: {1/mmx:.3f} px/мм по x, {1/mmy:.3f} px/мм по y"
+              if mmx > 0 and mmy > 0 else "[twin] масштаб сетки не определён")
     else:
         cv2.imwrite(a.out_base + "_aligned.png", photo)
         print("[twin] линий нет — копия не построена")

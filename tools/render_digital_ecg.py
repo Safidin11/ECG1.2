@@ -41,6 +41,7 @@ TRACE = "#111111"
 LABEL = "#3A3A3A"
 SEP = "#D5D5D5"
 LW_TRACE = 0.8                   # ≈2 px при 200 dpi
+DPI = 200                        # разрешение печати: 200 dpi ≈ 7.9 px/мм
 
 
 def _draw_grid(ax, W, H):
@@ -83,7 +84,7 @@ def render(sig_path, out_path, fs=500, grid=None, cols=None,
 
     W = LEFT + cols * col_mm + 6
     H = TOP + rows * ROW_H + 6
-    fig, ax = plt.subplots(figsize=(W / 25.4, H / 25.4), dpi=200)
+    fig, ax = plt.subplots(figsize=(W / 25.4, H / 25.4), dpi=DPI)
     fig.patch.set_facecolor(PAPER)
     ax.set_facecolor(PAPER)
     _draw_grid(ax, W, H)
@@ -115,7 +116,7 @@ def render(sig_path, out_path, fs=500, grid=None, cols=None,
     ax.set_aspect("equal")
     ax.axis("off")
     plt.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight", facecolor=PAPER)
+    fig.savefig(out_path, dpi=DPI, bbox_inches="tight", facecolor=PAPER)
     plt.close(fig)
     print("written", out_path)
 
