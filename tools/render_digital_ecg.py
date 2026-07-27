@@ -16,6 +16,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["font.sans-serif"] = ["Helvetica Neue", "Helvetica", "Arial",
+                                          "DejaVu Sans"]
+
 LEAD_ORDER = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
 DEFAULT_GRID = [["I", "aVR", "V1", "V4"], ["II", "aVL", "V2", "V5"],
                 ["III", "aVF", "V3", "V6"], ["II", "II", "II", "II"]]
@@ -28,31 +32,41 @@ TOP = 16.0
 ROW_H = 40.0
 CLIP_MV = 1.9
 
+# Та же палитра, что у цифрового двойника (tools/oecg_worker.py) — чтобы обе
+# картинки на странице выглядели как распечатки одного аппарата.
+PAPER = "#FFFDFD"
+GRID_MINOR = "#F9D8D8"
+GRID_MAJOR = "#F0AAAA"
+TRACE = "#111111"
+LABEL = "#3A3A3A"
+SEP = "#D5D5D5"
+LW_TRACE = 0.8                   # ≈2 px при 200 dpi
+
 
 def _draw_grid(ax, W, H):
-    minor, major = "#f4c9d0", "#e79aa6"
     for x in np.arange(0, W + 0.1, 1):
-        ax.plot([x, x], [0, H], color=minor, lw=0.3, zorder=0)
+        ax.plot([x, x], [0, H], color=GRID_MINOR, lw=0.35, alpha=0.9, zorder=0)
     for y in np.arange(0, H + 0.1, 1):
-        ax.plot([0, W], [y, y], color=minor, lw=0.3, zorder=0)
+        ax.plot([0, W], [y, y], color=GRID_MINOR, lw=0.35, alpha=0.9, zorder=0)
     for x in np.arange(0, W + 0.1, 5):
-        ax.plot([x, x], [0, H], color=major, lw=0.6, zorder=0)
+        ax.plot([x, x], [0, H], color=GRID_MAJOR, lw=0.8, zorder=0)
     for y in np.arange(0, H + 0.1, 5):
-        ax.plot([0, W], [y, y], color=major, lw=0.6, zorder=0)
+        ax.plot([0, W], [y, y], color=GRID_MAJOR, lw=0.8, zorder=0)
 
 
 def _plot_trace(ax, sig, x0, baseline, seconds, fs):
     n = int(seconds * fs)
     s = np.clip(np.nan_to_num(sig[:n]).astype(float), -CLIP_MV, CLIP_MV)
     t = np.arange(len(s)) / fs
-    ax.plot(x0 + t * MM_PER_S, baseline - s * MM_PER_MV, color="black",
-            lw=0.9, zorder=3, solid_joinstyle="round")
+    ax.plot(x0 + t * MM_PER_S, baseline - s * MM_PER_MV, color=TRACE,
+            lw=LW_TRACE, zorder=3, solid_joinstyle="round", solid_capstyle="round")
 
 
 def _cal_pulse(ax, x0, baseline):
+    """Стандартный импульс: 10 мм (1 мВ) в высоту, 5 мм в ширину, углы 90°."""
     ax.plot([x0 - 8, x0 - 8, x0 - 3, x0 - 3],
             [baseline, baseline - MM_PER_MV, baseline - MM_PER_MV, baseline],
-            color="black", lw=0.9, zorder=3)
+            color=TRACE, lw=LW_TRACE, zorder=3, solid_joinstyle="miter")
 
 
 def render(sig_path, out_path, fs=500, grid=None, cols=None,
@@ -70,8 +84,8 @@ def render(sig_path, out_path, fs=500, grid=None, cols=None,
     W = LEFT + cols * col_mm + 6
     H = TOP + rows * ROW_H + 6
     fig, ax = plt.subplots(figsize=(W / 25.4, H / 25.4), dpi=200)
-    fig.patch.set_facecolor("white")
-    ax.set_facecolor("white")
+    fig.patch.set_facecolor(PAPER)
+    ax.set_facecolor(PAPER)
     _draw_grid(ax, W, H)
 
     for r, row in enumerate(grid):
@@ -82,26 +96,26 @@ def render(sig_path, out_path, fs=500, grid=None, cols=None,
             if row[0] in data:
                 _plot_trace(ax, data[row[0]], LEFT + 2, baseline, PAPER_SEC, fs)
             ax.text(LEFT + 3, baseline - ROW_H / 2 + 5, row[0], fontsize=9,
-                    fontweight="bold", zorder=4)
+                    fontweight="bold", color=LABEL, zorder=4)
         else:
             for c, lead in enumerate(row):
                 x0 = LEFT + c * col_mm
-                if c > 0:
+                if c > 0:                       # ненавязчивая граница отведений
                     ax.plot([x0, x0], [baseline - ROW_H / 2 + 4, baseline + ROW_H / 2 - 4],
-                            color="black", lw=0.5, zorder=2)
+                            color=SEP, lw=0.5, alpha=0.5, zorder=2)
                 if lead in data:
                     _plot_trace(ax, data[lead], x0 + 2, baseline, sec_per_col, fs)
                 ax.text(x0 + 3, baseline - ROW_H / 2 + 5, lead, fontsize=9,
-                        fontweight="bold", zorder=4)
+                        fontweight="bold", color=LABEL, zorder=4)
 
-    ax.text(LEFT, H - 3, "25 mm/s    10 mm/mV", fontsize=8, color="#333")
-    ax.set_title(f"{title}  (demo, не медизделие)", fontsize=11, pad=8)
+    ax.text(LEFT, H - 3, "25 mm/s    10 mm/mV", fontsize=8, color=LABEL)
+    ax.set_title(f"{title}  (demo, не медизделие)", fontsize=11, pad=8, color=LABEL)
     ax.set_xlim(0, W)
     ax.set_ylim(H, 0)
     ax.set_aspect("equal")
     ax.axis("off")
     plt.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight", facecolor="white")
+    fig.savefig(out_path, dpi=200, bbox_inches="tight", facecolor=PAPER)
     plt.close(fig)
     print("written", out_path)
 
