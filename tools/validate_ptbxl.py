@@ -10,8 +10,11 @@ r"""Проверка точности оцифровки на открытой �
 Что меряем по каждому отведению:
   покрытие  — какую долю удалось прочитать вообще;
   корреляция — совпадает ли форма;
-  усиление  — отношение размаха нашего сигнала к эталону (1.00 = масштаб верный,
+  усиление  — общий масштаб, методом наименьших квадратов (1.00 = верно,
               0.50 = прочитали вдвое мельче, т.е. промах по калибровке);
+  зубец R   — отношение ВЫСОТ зубцов R. Отдельно от усиления: клинические
+              пороги заданы высотой зубца, и её занижение не видно ни по
+              корреляции, ни по SNR;
   SNR, дБ   — отношение мощности сигнала к мощности ошибки. Даём два числа:
               как есть и после исправления усиления. Если второе заметно выше
               первого, значит форму берём правильно, а масштаб — нет.
@@ -83,7 +86,12 @@ def compare_lead(ours: np.ndarray, truth: np.ndarray) -> dict | None:
     pad = np.concatenate([np.zeros(MAX_LAG), truth[:n + MAX_LAG]])
     if len(pad) < n + MAX_LAG + 1:
         pad = np.concatenate([pad, np.zeros(n + MAX_LAG + 1 - len(pad))])
-    c = correlate(pad - np.median(pad), a, mode="valid")
+    # Сдвиг ищем по НОРМИРОВАННОЙ взаимной корреляции. Без нормировки выигрывает
+    # положение, где под окно попал кусок с самой большой энергией, а не тот, где
+    # формы совпали: на записи с одним высоким комплексом сдвиг уезжал к нему.
+    p2 = pad - np.median(pad)
+    e = np.sqrt(np.convolve(p2 ** 2, np.ones(n), mode="valid"))
+    c = correlate(p2, a, mode="valid") / np.maximum(e, 1e-12)
     idx = int(np.argmax(c))
     t = pad[idx:idx + n]
     t = t - np.median(t)
@@ -97,8 +105,14 @@ def compare_lead(ours: np.ndarray, truth: np.ndarray) -> dict | None:
 
     err = float(np.sum((a - t) ** 2))
     sig = float(np.sum(t ** 2))
-    gain = float(np.std(a) / np.std(t))
-    err_g = float(np.sum((a / gain - t) ** 2)) if gain > 1e-6 else np.inf
+    # Усиление — методом наименьших квадратов, а НЕ отношением разбросов.
+    # Разброс складывается из сигнала и шума, поэтому шум оцифровки сам по себе
+    # поднимает std(a) и «усиление» получается больше единицы даже там, где
+    # амплитуды переданы верно: после восстановления вершин отношение разбросов
+    # показывало 1.025, тогда как настоящая высота зубца R была 0.992 от эталона.
+    # У наименьших квадратов шум не коррелирован с эталоном и смещения не даёт.
+    gain = float(a @ t / (t @ t))
+    err_g = float(np.sum((a / gain - t) ** 2)) if abs(gain) > 1e-6 else np.inf
     return {
         "corr": float(np.corrcoef(a, t)[0, 1]),
         "gain": gain,
@@ -107,7 +121,28 @@ def compare_lead(ours: np.ndarray, truth: np.ndarray) -> dict | None:
         "rms_uv": float(np.sqrt(np.mean((a - t) ** 2)) * 1000),
         "lag_ms": (idx - MAX_LAG) * 1000.0 / FS_OURS,
         "n": int(len(a)),
+        "r_amp": r_amp_ratio(a, t, FS_OURS),
     }
+
+
+def r_amp_ratio(a: np.ndarray, t: np.ndarray, fs: int) -> float | None:
+    """Отношение высот зубцов R — то, что на самом деле читают с плёнки.
+
+    Отдельно от усиления, потому что клинические пороги (гипертрофия, критерии
+    инфаркта) заданы именно высотой зубца, а не среднеквадратичным масштабом:
+    занижение вершин на 10% не видно ни по корреляции, ни по SNR, но сдвигает
+    именно эти пороги.
+    """
+    from ecg_measure import r_peaks               # noqa: PLC0415
+    pk = r_peaks(t, fs)
+    half = int(0.05 * fs)
+    rat = []
+    for p in pk:
+        lo, hi = max(0, p - half), min(len(t), p + half)
+        vt = float(np.max(np.abs(t[lo:hi])))
+        if vt > 0.15:                            # мелкие зубцы отношение шумят
+            rat.append(float(np.max(np.abs(a[lo:hi]))) / vt)
+    return float(np.median(rat)) if len(rat) >= 2 else None
 
 
 def heart_rate(x: np.ndarray, fs: int) -> float | None:
@@ -117,24 +152,24 @@ def heart_rate(x: np.ndarray, fs: int) -> float | None:
     return float(r["bpm"]) if r else None
 
 
-def run_one(hea: Path, work: Path) -> dict | None:
+def run_one(hea: Path, work: Path, reuse: bool = False) -> dict | None:
     truth = load_truth(hea)
     if truth is None:
         return None
     name = hea.stem
-    npy = work / f"{name}.npy"
-    png = work / f"{name}.png"
-    np.save(npy, truth)
-    rd.CLIP_MV = CLIP_MV
-    rd.render(str(npy), str(png), fs=FS_TRUTH,
-              title=f"PTB-XL {name}")
-    # Печать в разном разрешении = разная детализация входа. Конвейер мелкие
-    # снимки РАСТЯГИВАЕТ до TARGET_W, поэтому так воспроизводится ровно тот
-    # случай, на котором ломается реальное фото: размер большой, деталей мало.
-
     out = work / name
-    od.digitize(str(png), str(out), layout=LAYOUT)
     csvs = list(out.glob("*_timeseries_canonical.csv"))
+    if not (reuse and csvs):
+        npy = work / f"{name}.npy"
+        png = work / f"{name}.png"
+        np.save(npy, truth)
+        rd.CLIP_MV = CLIP_MV
+        rd.render(str(npy), str(png), fs=FS_TRUTH, title=f"PTB-XL {name}")
+        # Печать в разном разрешении = разная детализация входа. Конвейер мелкие
+        # снимки РАСТЯГИВАЕТ до TARGET_W, поэтому так воспроизводится ровно тот
+        # случай, на котором ломается реальное фото: размер большой, деталей мало.
+        od.digitize(str(png), str(out), layout=LAYOUT)
+        csvs = list(out.glob("*_timeseries_canonical.csv"))
     if not csvs:
         return {"record": name, "failed": "движок не вернул сигнал"}
     ours, names = load_csv(str(csvs[0]))
@@ -166,7 +201,7 @@ def summarize(rows: list[dict]) -> None:
         print("нечего сводить")
         return
     print(f"\n{'отв.':6s} {'покрытие':>9s} {'корр.':>7s} {'усил.':>7s} "
-          f"{'SNR дБ':>8s} {'SNR испр':>9s} {'RMS мкВ':>9s}")
+          f"{'зубец R':>8s} {'SNR дБ':>8s} {'SNR испр':>9s} {'RMS мкВ':>9s}")
     for lead in LEAD_ORDER:
         vals = [r["leads"][lead] for r in ok if lead in r["leads"]]
         cov = [r["coverage"].get(lead, 0) for r in ok]
@@ -174,17 +209,22 @@ def summarize(rows: list[dict]) -> None:
             print(f"{lead:6s} {100*np.mean(cov):8.0f}% {'—':>7s}")
             continue
         med = lambda k: np.median([v[k] for v in vals])      # noqa: E731
+        ra = [v["r_amp"] for v in vals if v.get("r_amp")]
         print(f"{lead:6s} {100*np.mean(cov):8.0f}% {med('corr'):7.3f} "
-              f"{med('gain'):7.2f} {med('snr'):8.1f} {med('snr_gain_fixed'):9.1f} "
-              f"{med('rms_uv'):9.0f}")
+              f"{med('gain'):7.2f} {(f'{np.median(ra):.3f}' if ra else '—'):>8s} "
+              f"{med('snr'):8.1f} {med('snr_gain_fixed'):9.1f} {med('rms_uv'):9.0f}")
 
     everything = [v for r in ok for v in r["leads"].values()]
+    ra = [v["r_amp"] for v in everything if v.get("r_amp")]
     print(f"\nвсего записей: {len(rows)}, с сигналом: {len(ok)}, "
           f"отведений сравнено: {len(everything)}")
     print(f"медиана: корреляция {np.median([v['corr'] for v in everything]):.3f}, "
           f"усиление {np.median([v['gain'] for v in everything]):.3f}, "
           f"SNR {np.median([v['snr'] for v in everything]):.1f} дБ "
           f"(после исправления усиления {np.median([v['snr_gain_fixed'] for v in everything]):.1f} дБ)")
+    if ra:
+        print(f"высота зубца R к эталону: {np.median(ra):.3f} "
+              f"(в пределах 5% — {100*np.mean([abs(x-1) < 0.05 for x in ra]):.0f}% отведений)")
 
     hr = [(r["hr_truth"], r["hr_ours"]) for r in ok
           if r.get("hr_truth") and r.get("hr_ours")]
@@ -200,6 +240,8 @@ def main():
     ap.add_argument("--data", default=str(ROOT / "data" / "ptbxl"))
     ap.add_argument("-o", "--out", default=str(ROOT / "output" / "validate"))
     ap.add_argument("--fresh", action="store_true", help="считать заново, не докатывать")
+    ap.add_argument("--reuse", action="store_true",
+                    help="не гонять движок заново, взять уже готовые CSV — для пересчёта метрик")
     ap.add_argument("--dpi", type=int, default=rd.DPI,
                     help="разрешение печати плёнки: 200 dpi ≈ 7.9 px/мм")
     a = ap.parse_args()
@@ -228,7 +270,7 @@ def main():
         if hea.stem in done:
             continue
         try:
-            r = run_one(hea, work)
+            r = run_one(hea, work, reuse=a.reuse)
         except Exception as exc:
             # Не обрезаем в лог: из 120 символов диагноза не собрать, а падения
             # движка — самое частое, что тут приходится разбирать.

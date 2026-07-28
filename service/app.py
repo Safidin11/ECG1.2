@@ -29,6 +29,9 @@ from oecg_digitize import digitize                      # noqa: E402
 from oecg_render import coverage, load_csv, render      # noqa: E402
 from ecg_leads import consistency, reconstruct_limb   # noqa: E402
 from ecg_measure import best_lead, heart_rate         # noqa: E402
+from ecg_delineate import measure                     # noqa: E402
+from ecg_delineate import numbers as measure_numbers  # noqa: E402
+from ecg_card import card as measure_card             # noqa: E402
 from oecg_render import FS                            # движок отдаёт 1000 Гц
 
 # --- пороги доверия к разбору ---------------------------------------------
@@ -240,6 +243,66 @@ summary:hover{color:var(--ink)}
 .alarm.caution{background:color-mix(in srgb,var(--warn) 12%,var(--card));
   border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
 .alarm.caution>b{color:var(--warn)}
+/* --- карточка измерений ------------------------------------------------- */
+.mrow{display:grid;grid-template-columns:repeat(4,1fr) 168px;gap:14px;
+  align-items:stretch;margin-bottom:18px}
+@media (max-width:980px){.mrow{grid-template-columns:repeat(2,1fr)}}
+.tile{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+.tile .t{font-size:11.5px;font-weight:700;letter-spacing:.05em;
+  text-transform:uppercase;color:var(--mut)}
+.tile .v{font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.25;
+  font-variant-numeric:tabular-nums}
+.tile .v s{font-size:13px;font-weight:600;color:var(--mut);
+  text-decoration:none;margin-left:5px}
+.tile.high .v,.tile.low .v{color:var(--warn)}
+.tile.na .v{color:var(--mut)}
+/* Полоса нормы: зелёный участок — где значение считается обычным, риска —
+   где оно оказалось. Одна картинка вместо фразы «норма 120-200». */
+.scale{position:relative;height:6px;border-radius:3px;background:var(--line);margin-top:11px}
+.scale i{position:absolute;top:0;bottom:0;border-radius:3px;
+  background:color-mix(in srgb,var(--acc) 45%,transparent)}
+.scale u{position:absolute;top:-3px;width:2.5px;height:12px;border-radius:2px;
+  background:var(--ink);transform:translateX(-50%)}
+.tile.high .scale u,.tile.low .scale u{background:var(--warn)}
+.tile .h{font-size:11.5px;color:var(--mut);margin-top:8px;min-height:1.2em}
+.dialbox{background:var(--bg2);border:1px solid var(--line);border-radius:12px;
+  padding:11px;display:grid;place-items:center;text-align:center}
+.dialbox .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums}
+.dialbox .h{font-size:11.5px;color:var(--mut)}
+svg.dial{width:118px;height:118px}
+svg.dial .norm{fill:color-mix(in srgb,var(--acc) 16%,transparent)}
+svg.dial .ax{stroke:var(--line);stroke-width:1}
+svg.dial .axl{fill:var(--mut);font-size:8.5px;text-anchor:middle;font-weight:600}
+svg.dial .vec{stroke:var(--acc);fill:var(--acc);stroke-width:2.5;stroke-linecap:round}
+
+/* Двенадцать усреднённых комплексов: 6 в ряд, как в отчёте кардиографа. */
+.beatbox{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;
+  background:var(--bg2);border:1px solid var(--line);border-radius:12px;
+  padding:12px;margin-bottom:14px}
+@media (max-width:1180px){.beatbox{grid-template-columns:repeat(3,1fr)}}
+@media (max-width:640px){.beatbox{grid-template-columns:repeat(2,1fr)}}
+.beat svg{width:100%;height:auto;display:block;--paper:#fffdfd;border-radius:5px}
+.beat .gm{stroke:#fadcdc;stroke-width:.6;fill:none}
+.beat .gM{stroke:#f0aaaa;stroke-width:1.1;fill:none}
+.beat .tr{stroke:#111;stroke-width:2;fill:none;stroke-linejoin:round;stroke-linecap:round}
+.beat .iso{stroke:#93a5a5;stroke-width:.9;stroke-dasharray:4 4;fill:none}
+.beat .mk{stroke:#2563eb;stroke-width:1.3;stroke-dasharray:5 3;fill:none;opacity:.8}
+.beat .ld{fill:#3a3a3a;font-size:13px;font-weight:700}
+.beat .sp{opacity:.11}
+.beat .sp.pr{fill:#2563eb}
+.beat .sp.qrs{fill:#dc2626}
+.beat .sp.qt{fill:#d97706;opacity:.055}
+
+.st{display:grid;grid-template-columns:repeat(12,1fr);gap:7px}
+@media (max-width:1100px){.st{grid-template-columns:repeat(6,1fr)}}
+.st div{background:var(--bg2);border:1px solid var(--line);border-radius:8px;
+  padding:7px 6px;text-align:center}
+.st .n{font-size:11px;font-weight:700;color:var(--mut)}
+.st .v{font-size:13.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.st .up{border-color:color-mix(in srgb,var(--err) 50%,transparent)}
+.st .up .v{color:var(--err)}
+.st .down{border-color:color-mix(in srgb,var(--acc2) 50%,transparent)}
+.st .down .v{color:var(--acc2)}
 .files{font-size:12.5px;color:var(--mut);margin-top:16px;
   padding-top:15px;border-top:1px solid var(--line)}
 .files code{background:var(--bg2);padding:2px 7px;border-radius:5px;
@@ -326,6 +389,61 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     <figcaption><b>Цифровая копия</b> — та же геометрия, что на снимке; линия построена по данным</figcaption>
     <div class=imgbox><img src="/img/{{r.run}}/{{'twin.png' if r.twin else 'digital_ecg.png'}}" alt="цифровая копия"></div>
   </figure>
+
+  {% if r.card %}
+  {% set c = r.card %}
+  <figcaption style="margin-bottom:11px"><b>Измерения</b>
+    — по усреднённому комплексу: {{c.beats}} удар(ов), {{c.leads}} отведений.
+    Границы ищутся сразу по всем отведениям, а не по одному.</figcaption>
+
+  {% if c.flags %}
+  <div class="alarm caution" style="margin-bottom:16px">
+    <b>Часть измерений ненадёжна</b>
+    <ul>{% for f in c.flags %}
+      <li class=warn><b>{{f.title}}</b><br><span>{{f.text}}</span></li>
+    {% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <div class=mrow>
+    {% for t in c.tiles %}
+    <div class="tile {{t.state}}">
+      <div class=t>{{t.label}}</div>
+      <div class=v>{{t.value}}<s>{{t.unit}}</s></div>
+      <div class=scale>
+        <i style="left:{{t.band[0]}}%;width:{{t.band[1]}}%"></i>
+        {% if t.pos is not none %}<u style="left:{{t.pos}}%"></u>{% endif %}
+      </div>
+      <div class=h>{{t.hint or ''}}</div>
+    </div>
+    {% endfor %}
+    <div class=dialbox>
+      {{c.dial|safe}}
+      <div><span class=v>{{c.axis}}</span><div class=h>ось {{c.axis_word}}</div></div>
+    </div>
+  </div>
+
+  {% if c.beats_svg %}
+  <div class=beatbox>
+    {% for b in c.beats_svg %}<div class=beat>{{b.svg|safe}}</div>{% endfor %}
+  </div>
+  <figcaption style="margin:-4px 0 18px">Усреднённые комплексы всех отведений в
+    одном масштабе{% if c.gain %} <b>{{c.gain}} усиления</b> — зубцы не влезали
+    в клетку{% endif %}. Клетка — 40 мс по горизонтали
+    и {{'0.2' if c.gain else '0.1'}} мВ по вертикали. Пунктиром отмечены начало
+    зубца P, начало и конец комплекса (точка J) и конец зубца T — те самые
+    точки, между которыми меряются интервалы выше; отметки общие, потому что и
+    найдены сразу по всем отведениям.{% if c.qt_detail %} {{c.qt_detail}}.{% endif %}</figcaption>
+  {% endif %}
+
+  <figcaption style="margin-bottom:10px"><b>Уровень ST</b> — смещение через 60 мс
+    после конца комплекса, в миллиметрах плёнки, от изолинии перед комплексом</figcaption>
+  <div class=st style="margin-bottom:20px">
+    {% for s in c.st %}
+    <div class="{{s.state}}"><div class=n>{{s.lead}}</div><div class=v>{{s.mm}}</div></div>
+    {% endfor %}
+  </div>
+  {% endif %}
 
   {% if r.filled %}
   <div class=note>Восстановлено <b>{{r.filled_sec}} с</b> сигнала в отведениях от конечностей —
@@ -470,6 +588,16 @@ def digitize_route():
         j = best_lead(sig, names)
         hr = heart_rate(sig[:, j], FS) if j is not None else None
 
+        # Интервалы и ось. simultaneous=False: в раскладке 3x4 у каждой клетки
+        # своё время, общей отметки удара нет — комплексы приходится совмещать.
+        # Отдельный try: измерения сложнее оцифровки и падать им есть на чём,
+        # а терять из-за этого готовый сигнал незачем.
+        try:
+            meas = measure(sig, names, FS, simultaneous=False)
+        except Exception:
+            app.logger.warning("измерения не сошлись: %s", traceback.format_exc())
+            meas = None
+
         # Проверки доверия: сверку связей берём ДО восстановления по связям —
         # после него она проверяла бы наши же вычисления и всегда сходилась.
         qfiles = list(engine_out.glob("*_quality.json"))
@@ -481,6 +609,7 @@ def digitize_route():
              "coverage": cov, "coverage_before": cov_before, "seconds": secs,
              "consistency": check, "reconstructed": rep["filled"],
              "heart_rate": hr, "hr_lead": (names[j] if j is not None else None),
+             "measurements": measure_numbers(meas),
              "quality": qual, "problems": problems},
             ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -490,6 +619,7 @@ def digitize_route():
                                     "manual": bool(chosen), "upload": src.name, "twin": has_twin, "stages": has_stages,
                                     "filled": filled, "filled_sec": round(filled / 1000.0, 1),
                                     "hr": hr, "problems": problems,
+                                    "card": measure_card(meas),
                                     "resid": resid,
                                     "resid_ok": (resid is not None and resid < 0.15),
                                     "resid_txt": (f"{100*resid:.0f}%" if resid is not None

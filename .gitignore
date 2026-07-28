@@ -39,3 +39,4 @@ data/samples/native_input/
 
 # Открытая база PTB-XL — качается скриптом, в репозиторий не кладём
 data/ptbxl/
+data/ptbxl_plus/
