@@ -6,7 +6,8 @@
 со своим venv, как и другие внешние решения в проекте.
 
 Запуск:
-    ./.venv/bin/python service/app.py     ->  http://127.0.0.1:5000
+    ./.venv/bin/python service/app.py     ->  http://127.0.0.1:5050
+                                              + адрес для телефона в той же сети
 
 Learning/demo-инструмент. НЕ медицинское изделие.
 """
@@ -687,9 +688,21 @@ if __name__ == "__main__":
     # По умолчанию слушаем все интерфейсы: иначе с телефона не зайти.
     # Это ЛОКАЛЬНАЯ СЕТЬ, не интернет: адрес 192.168.x.x снаружи не виден.
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--port", type=int, default=5000)
+    # Не 5000: на macOS этот порт держит приёмник AirPlay, и на всех
+    # интерфейсах сервер туда уже не встанет (на одном 127.0.0.1 вставал —
+    # отсюда и путаница: локально работало, с телефона нет).
+    ap.add_argument("--port", type=int, default=5050)
     a = ap.parse_args()
 
+    import socket as _s
+    with _s.socket() as probe:                 # порт мог занять кто-то ещё
+        probe.setsockopt(_s.SOL_SOCKET, _s.SO_REUSEADDR, 1)
+        try:
+            probe.bind((a.host, a.port))
+        except OSError:
+            probe.bind((a.host, 0))
+            a.port = probe.getsockname()[1]
+            print(f"порт занят, беру свободный: {a.port}")
     print(f"ECG1.2 -> http://127.0.0.1:{a.port}")
     for ip in (lan_addresses() if a.host == "0.0.0.0" else []):
         print(f"с телефона (та же сеть Wi-Fi) -> http://{ip}:{a.port}")

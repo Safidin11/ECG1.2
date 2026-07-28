@@ -169,7 +169,7 @@ Ahus-AIM/Open-ECG-Digitizer: `grid` из строк; строка с одина�
 
 ```bash
 ./.venv/bin/python -m pip install flask     # один раз
-./.venv/bin/python service/app.py           # -> http://127.0.0.1:5000
+./.venv/bin/python service/app.py           # -> http://127.0.0.1:5050
 ```
 
 Открой в браузере, загрузи картинку ЭКГ, выбери формат раскладки (или «авто»).
