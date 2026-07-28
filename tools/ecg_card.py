@@ -33,7 +33,13 @@ NORMS = {
     "pr_ms": (120, 200, 80, 320, "мс"),
     "qrs_ms": (70, 110, 40, 180, "мс"),
     "qtc": (350, 450, 280, 560, "мс"),
+    "sokolow": (0, 35, 0, 60, "мм"),
 }
+
+# Цвета интервалов на комплексах. Синий — PQ, красный — комплекс, янтарный — QT.
+BANDS = (("p_on", "qrs_on", "pq", "#2563eb", 0.30),
+         ("qrs_on", "qrs_off", "qrs", "#dc2626", 0.30),
+         ("qrs_on", "t_off", "qt", "#d97706", 0.16))
 
 
 def _fmt(v, digits=0):
@@ -43,11 +49,15 @@ def _fmt(v, digits=0):
 def tiles(m: dict) -> list[dict]:
     """Плитки с величинами и положением на шкале нормы."""
     qtc = (m.get("qtc") or {}).get("bazett")
+    sk = m.get("sokolow")
     items = [
         ("ЧСС", "hr", m.get("hr"), "уд/мин", "по интервалам между комплексами"),
-        ("PR", "pr_ms", m.get("pr_ms"), "мс", "от начала зубца P до начала комплекса"),
+        ("PQ", "pr_ms", m.get("pr_ms"), "мс", "от начала зубца P до начала комплекса"),
         ("QRS", "qrs_ms", m.get("qrs_ms"), "мс", "длительность комплекса"),
         ("QTc", "qtc", qtc, "мс", "QT с поправкой на частоту, по Базетту"),
+        ("Соколов", "sokolow", (sk or {}).get("mm"), "мм",
+         (f"S в V1 + R в {sk['lead']}, порог 35 мм" if sk
+          else "S в V1 + R в V5 или V6")),
     ]
     out = []
     for label, key, val, unit, hint in items:
@@ -130,18 +140,30 @@ def beats_svg(m: dict) -> tuple[list[dict], float] | None:
     height = 2 * half_mm * PX_MM
     x = lambda i: (i - left) / fs * px_s                    # noqa: E731
 
-    marks = []
-    for a, b, cls in (("p_on", "qrs_on", "pr"), ("qrs_on", "qrs_off", "qrs"),
-                      ("qrs_on", "t_off", "qt")):
-        i, j = mk.get(a), mk.get(b)
-        if i is not None and j is not None:
-            marks.append(f'<rect class="sp {cls}" x="{x(i):.1f}" y="0" '
-                         f'width="{x(j) - x(i):.1f}" height="{height:.0f}"/>')
-    for key in ("p_on", "qrs_on", "qrs_off", "t_off"):
-        i = mk.get(key)
-        if i is not None:
-            marks.append(f'<path class="mk" d="M{x(i):.1f} 0V{height:.0f}"/>')
-    marks = "".join(marks)
+    # Полосы интервалов заливаем не плашкой, а вертикальным градиентом: густо у
+    # краёв кадра и почти прозрачно посередине, где идёт сама кривая. Так
+    # интервал читается, а линию ничем не заслоняет — плашка её притеняла.
+    # Порядок обратный густоте: широкий QT кладём первым, чтобы более узкие и
+    # более важные PQ и QRS ложились поверх.
+    def bands(uid: str) -> str:
+        defs, rects = [], []
+        for a, b, cls, colour, top in reversed(BANDS):
+            i, j = mk.get(a), mk.get(b)
+            if i is None or j is None:
+                continue
+            gid = f"g{cls}{uid}"
+            stops = "".join(
+                f'<stop offset="{o}" stop-color="{colour}" stop-opacity="{v:.3f}"/>'
+                for o, v in ((0, top), (0.40, top * 0.10), (0.60, top * 0.10), (1, top)))
+            defs.append(f'<linearGradient id="{gid}" x1="0" y1="0" x2="0" y2="1">'
+                        f'{stops}</linearGradient>')
+            rects.append(f'<rect x="{x(i):.1f}" y="0" width="{x(j) - x(i):.1f}" '
+                         f'height="{height:.0f}" fill="url(#{gid})"/>')
+        return f'<defs>{"".join(defs)}</defs>{"".join(rects)}'
+
+    lines = "".join(f'<path class="mk" d="M{x(mk[k]):.1f} 0V{height:.0f}"/>'
+                    for k in ("p_on", "qrs_on", "qrs_off", "t_off")
+                    if mk.get(k) is not None)
 
     out = []
     for name in shown:
@@ -150,13 +172,18 @@ def beats_svg(m: dict) -> tuple[list[dict], float] | None:
         y = lambda v: height / 2 - v * gain * PX_MM         # noqa: E731
         d = "".join(("M" if k == 0 else "L") + f"{x(left + k):.1f} {y(v):.1f}"
                     for k, v in enumerate(seg))
-        out.append({"lead": name, "svg": (
+        off = name in (m.get("misaligned") or [])
+        out.append({"lead": name, "off": off, "svg": (
             f'<svg viewBox="0 0 {width:.0f} {height:.0f}" role="img" '
             f'aria-label="усреднённый комплекс, отведение {name}">'
-            f'{_grid(width, height)}{marks}'
+            # id градиентов должны быть уникальны в пределах страницы: на ней
+            # двенадцать таких SVG, и совпадение имён склеило бы их заливки
+            f'{_grid(width, height)}{bands(name)}{lines}'
             f'<path class="iso" d="M0 {height / 2:.1f}H{width:.0f}"/>'
             f'<path class="tr" d="{d}"/>'
-            f'<text class="ld" x="5" y="15">{name}</text></svg>')})
+            f'<text class="ld{" off" if off else ""}" x="5" y="15">{name}</text>'
+            + ('<text class="warn" x="5" y="30">не совмещено</text>' if off else "")
+            + "</svg>")})
     return out, gain
 
 
@@ -250,6 +277,7 @@ def card(m: dict | None) -> dict | None:
         "dial": axis_svg(ax), "axis": ("—" if ax is None else f"{ax:+.0f}°"),
         "axis_word": axis_word(ax), "st": st_rows(m),
         "beats": m.get("n_beats"), "leads": m.get("n_leads"),
+        "misaligned": m.get("misaligned") or [],
         "flags": [{"title": FLAG_TEXT[f][0], "text": FLAG_TEXT[f][1]}
                   for f in m.get("flags", []) if f in FLAG_TEXT],
     }

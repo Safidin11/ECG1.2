@@ -79,6 +79,27 @@ def heart_rate(x: np.ndarray, fs: int) -> dict | None:
 
 PRE_MS, POST_MS = 300, 500          # окно комплекса вокруг зубца R
 
+# Полоса у края клетки, комплексы из которой берём в последнюю очередь.
+# 200 мс — примерно длительность комплекса вместе с зубцом P: если центр удара
+# ближе к краю, часть его почти наверняка обрезана или досталась от соседа.
+EDGE_MS = 200
+
+
+def _highpass(x: np.ndarray, fs: int, win_ms: float = 120) -> np.ndarray:
+    """Убрать медленную составляющую: сигнал минус своё скользящее среднее.
+
+    Окно 120 мс подобрано по ширине событий: комплекс QRS в него не влезает и
+    остаётся почти целиком, а зубец T и сегмент ST — события в три-четыре раза
+    более широкие — срезаются.
+    """
+    n = max(1, int(win_ms * fs / 1000) | 1)
+    ok = ~np.isnan(x)
+    filled = np.where(ok, x, 0.0)
+    k = np.ones(n)
+    s = np.convolve(filled, k, mode="same")
+    c = np.convolve(ok.astype(float), k, mode="same")
+    return x - np.divide(s, c, out=np.zeros_like(s), where=c > 0)
+
 
 def refine_peaks(seg: np.ndarray, peaks: np.ndarray, fs: int,
                  half_ms: float = 50) -> np.ndarray:
@@ -87,16 +108,35 @@ def refine_peaks(seg: np.ndarray, peaks: np.ndarray, fs: int,
     Пан-Томпкинс ставит метку по огибающей, а она отстаёт и гуляет на десятки
     миллисекунд. Для усреднения этого мало: рассинхрон в 20 мс размажет ту
     самую вершину, которую мы отдельно восстанавливали.
+
+    Вершину ищем по сигналу БЕЗ медленной составляющей, а не по самому большому
+    отклонению от изолинии. При высоком зубце T или выраженной элевации ST
+    именно они и оказываются самым большим отклонением: в грудных отведениях с
+    мелким зубцом R метка уезжала на 50 мс — ровно на край окна поиска, — и
+    комплекс в этом отведении вставал в среднем удар на сто миллисекунд мимо
+    остальных. На картинке это видно сразу: отметки границ стоят не на том
+    месте кривой.
     """
     half = int(half_ms * fs / 1000)
+    near = max(1, int(25 * fs / 1000))
+    fast = _highpass(seg, fs)
     base = np.nanmedian(seg)
     out = []
     for p in peaks:
         a, b = max(0, p - half), min(len(seg), p + half + 1)
-        w = seg[a:b]
+        w = fast[a:b]
         if not len(w) or np.all(np.isnan(w)):
             continue
-        out.append(a + int(np.nanargmax(np.abs(w - base))))
+        # Сначала по «быстрому» сигналу находим, ГДЕ комплекс, — сюда зубец T
+        # уже не дотягивается. А вершину берём на исходной кривой рядом с этим
+        # местом: усреднять удары надо по настоящей вершине, иначе теряется
+        # ровно та амплитуда, которую отдельно восстанавливали.
+        j = a + int(np.nanargmax(np.abs(w)))
+        c, d = max(0, j - near), min(len(seg), j + near + 1)
+        v = seg[c:d]
+        if np.all(np.isnan(v)):
+            continue
+        out.append(c + int(np.nanargmax(np.abs(v - base))))
     return np.array(sorted(set(out)), dtype=int)
 
 
@@ -171,6 +211,16 @@ def representative_beat(seg: np.ndarray, peaks: np.ndarray, fs: int,
     """
     pre, post = int(pre_ms * fs / 1000), int(post_ms * fs / 1000)
     peaks = refine_peaks(seg, peaks, fs)
+
+    # Комплексы у самых краёв клетки берём только если других нет. Границы
+    # клеток на плёнке режутся неточно, и с краю запросто оказывается кусок
+    # комплекса из СОСЕДНЕГО отведения — а он попадёт в среднее как свой и
+    # испортит и форму, и все границы. Середина клетки такого риска не несёт.
+    edge = int(EDGE_MS * fs / 1000)
+    inner = peaks[(peaks >= edge) & (peaks <= len(seg) - edge)]
+    if len(inner) >= 2:
+        peaks = inner
+
     beats = []
     for p in peaks:
         # Окно за краем не выбрасываем, а добираем пустотой: в клетке 3x4 всего

@@ -244,13 +244,14 @@ summary:hover{color:var(--ink)}
   border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
 .alarm.caution>b{color:var(--warn)}
 /* --- карточка измерений ------------------------------------------------- */
-.mrow{display:grid;grid-template-columns:repeat(4,1fr) 168px;gap:14px;
+.mrow{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) 150px;gap:12px;
   align-items:stretch;margin-bottom:18px}
-@media (max-width:980px){.mrow{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:1250px){.mrow{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:760px){.mrow{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .tile{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
 .tile .t{font-size:11.5px;font-weight:700;letter-spacing:.05em;
   text-transform:uppercase;color:var(--mut)}
-.tile .v{font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.25;
+.tile .v{font-size:27px;font-weight:700;letter-spacing:-.02em;line-height:1.25;
   font-variant-numeric:tabular-nums}
 .tile .v s{font-size:13px;font-weight:600;color:var(--mut);
   text-decoration:none;margin-left:5px}
@@ -288,10 +289,10 @@ svg.dial .vec{stroke:var(--acc);fill:var(--acc);stroke-width:2.5;stroke-linecap:
 .beat .iso{stroke:#93a5a5;stroke-width:.9;stroke-dasharray:4 4;fill:none}
 .beat .mk{stroke:#2563eb;stroke-width:1.3;stroke-dasharray:5 3;fill:none;opacity:.8}
 .beat .ld{fill:#3a3a3a;font-size:13px;font-weight:700}
-.beat .sp{opacity:.11}
-.beat .sp.pr{fill:#2563eb}
-.beat .sp.qrs{fill:#dc2626}
-.beat .sp.qt{fill:#d97706;opacity:.055}
+.beat .ld.off{fill:#b45309}
+.beat .warn{fill:#b45309;font-size:11px;font-weight:600}
+.beat.off svg{outline:1.5px solid color-mix(in srgb,var(--warn) 55%,transparent);
+  outline-offset:-1.5px;border-radius:5px}
 
 .st{display:grid;grid-template-columns:repeat(12,1fr);gap:7px}
 @media (max-width:1100px){.st{grid-template-columns:repeat(6,1fr)}}
@@ -425,7 +426,8 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
 
   {% if c.beats_svg %}
   <div class=beatbox>
-    {% for b in c.beats_svg %}<div class=beat>{{b.svg|safe}}</div>{% endfor %}
+    {% for b in c.beats_svg %}
+    <div class="beat {{'off' if b.off else ''}}">{{b.svg|safe}}</div>{% endfor %}
   </div>
   <figcaption style="margin:-4px 0 18px">Усреднённые комплексы всех отведений в
     одном масштабе{% if c.gain %} <b>{{c.gain}} усиления</b> — зубцы не влезали
@@ -433,7 +435,11 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     и {{'0.2' if c.gain else '0.1'}} мВ по вертикали. Пунктиром отмечены начало
     зубца P, начало и конец комплекса (точка J) и конец зубца T — те самые
     точки, между которыми меряются интервалы выше; отметки общие, потому что и
-    найдены сразу по всем отведениям.{% if c.qt_detail %} {{c.qt_detail}}.{% endif %}</figcaption>
+    найдены сразу по всем отведениям.{% if c.qt_detail %} {{c.qt_detail}}.{% endif %}
+    {% if c.misaligned %}<br><b style="color:var(--warn)">Не совмещены:
+    {{c.misaligned|join(', ')}}</b> — самое быстрое отклонение в этих отведениях
+    пришлось не на комплекс, значит их удар встал мимо остальных. Из расчёта
+    границ и из таблицы ST они исключены, кривые показаны как есть.{% endif %}</figcaption>
   {% endif %}
 
   <figcaption style="margin-bottom:10px"><b>Уровень ST</b> — смещение через 60 мс
