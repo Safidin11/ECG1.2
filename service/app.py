@@ -281,7 +281,20 @@ svg.dial .vec{stroke:var(--acc);fill:var(--acc);stroke-width:2.5;stroke-linecap:
   background:var(--bg2);border:1px solid var(--line);border-radius:12px;
   padding:12px;margin-bottom:14px}
 @media (max-width:1180px){.beatbox{grid-template-columns:repeat(3,1fr)}}
-@media (max-width:640px){.beatbox{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:640px){.beatbox{grid-template-columns:repeat(2,1fr);gap:6px;padding:8px}}
+/* Телефон: полей меньше, колонок меньше, картинка на всю ширину. */
+@media (max-width:560px){
+  .wrap{padding:16px 12px 40px}
+  .card{padding:14px;border-radius:12px}
+  .sub{margin-left:0}
+  .st{grid-template-columns:repeat(4,1fr)}
+  .leads{grid-template-columns:repeat(4,1fr)}
+  .mrow{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .tile{padding:10px 11px}
+  .tile .v{font-size:23px}
+  .tile .h{display:none}
+  h1{font-size:20px}
+}
 .beat svg{width:100%;height:auto;display:block;--paper:#fffdfd;border-radius:5px}
 .beat .gm{stroke:#fadcdc;stroke-width:.6;fill:none}
 .beat .gM{stroke:#f0aaaa;stroke-width:1.1;fill:none}
@@ -296,6 +309,9 @@ svg.dial .vec{stroke:var(--acc);fill:var(--acc);stroke-width:2.5;stroke-linecap:
 
 .st{display:grid;grid-template-columns:repeat(12,1fr);gap:7px}
 @media (max-width:1100px){.st{grid-template-columns:repeat(6,1fr)}}
+/* По картинке на телефоне ничего не разглядеть, поэтому она открывается
+   отдельной вкладкой в полном размере — там работает щипок для зума. */
+.imgbox a{display:block}
 .st div{background:var(--bg2);border:1px solid var(--line);border-radius:8px;
   padding:7px 6px;text-align:center}
 .st .n{font-size:11px;font-weight:700;color:var(--mut)}
@@ -388,7 +404,8 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
 
   <figure>
     <figcaption><b>Цифровая копия</b> — та же геометрия, что на снимке; линия построена по данным</figcaption>
-    <div class=imgbox><img src="/img/{{r.run}}/{{'twin.png' if r.twin else 'digital_ecg.png'}}" alt="цифровая копия"></div>
+    <div class=imgbox><a href="/img/{{r.run}}/{{'twin.png' if r.twin else 'digital_ecg.png'}}" target=_blank>
+      <img src="/img/{{r.run}}/{{'twin.png' if r.twin else 'digital_ecg.png'}}" alt="цифровая копия"></a></div>
   </figure>
 
   {% if r.card %}
@@ -643,6 +660,39 @@ def img(run, name):
     return send_file(str(p))
 
 
+def lan_addresses() -> list[str]:
+    """Адреса этой машины в локальной сети — по ним заходят с телефона.
+
+    Показываем ВСЕ подходящие, а не один «главный». Маршрут по умолчанию тут
+    не помощник: при включённом VPN он уходит в туннель, и вместо адреса
+    Wi-Fi получается что-нибудь вроде 198.18.0.1, с которого телефон не зайдёт.
+    Домашние диапазоны 192.168.x, 10.x и 172.16-31.x — то, что нужно.
+    """
+    import socket
+    out = []
+    for _, _, _, _, sa in socket.getaddrinfo(socket.gethostname(), None,
+                                             socket.AF_INET):
+        ip = sa[0]
+        a, b = (int(x) for x in ip.split(".")[:2])
+        if a == 192 and b == 168 or a == 10 or (a == 172 and 16 <= b <= 31):
+            if ip not in out:
+                out.append(ip)
+    return out
+
+
 if __name__ == "__main__":
-    print("ECG1.2 -> http://127.0.0.1:5000")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    # По умолчанию слушаем все интерфейсы: иначе с телефона не зайти.
+    # Это ЛОКАЛЬНАЯ СЕТЬ, не интернет: адрес 192.168.x.x снаружи не виден.
+    ap.add_argument("--host", default="0.0.0.0")
+    ap.add_argument("--port", type=int, default=5000)
+    a = ap.parse_args()
+
+    print(f"ECG1.2 -> http://127.0.0.1:{a.port}")
+    for ip in (lan_addresses() if a.host == "0.0.0.0" else []):
+        print(f"с телефона (та же сеть Wi-Fi) -> http://{ip}:{a.port}")
+    # threaded: сервер однопоточный по умолчанию, и пока считается одна
+    # картинка, страница не открывается даже на другом устройстве.
+    app.run(host=a.host, port=a.port, debug=False, threaded=True)
