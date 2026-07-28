@@ -19,6 +19,7 @@ CSV дословно.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -76,6 +77,213 @@ def save_csv(canonical, base: str) -> None:
     header = ",".join(LEAD_NAMES[:data.shape[0]])
     np.savetxt(base + "_timeseries_canonical.csv", data.T, delimiter=",",
                header=header, comments="")
+
+
+def x_offset(arr: np.ndarray, prob: np.ndarray) -> int:
+    """На сколько столбцов линии сдвинуты относительно карты вероятностей.
+
+    Их `preprocess_lines` (signal_extractor.py:216-221) обрезает массив линий
+    по крайним столбцам, где хоть что-то нашлось: `lines[:, first:last+1]`.
+    Поэтому столбец 0 линии — это столбец `first` карты, а не нулевой.
+    Само `first` наружу не отдаётся, но его легко найти перебором: при верном
+    сдвиге точки линии ложатся на чернила, и сумма вероятностей под ними
+    максимальна. Так мы не зависим от их внутренностей.
+    """
+    w_l, w_p = arr.shape[1], prob.shape[1]
+    if w_l >= w_p:
+        return 0
+    cols = np.flatnonzero(~np.all(np.isnan(arr), axis=0))
+    if len(cols) == 0:
+        return 0
+    sample = cols[:: max(1, len(cols) // 300)]
+    best, best_score = 0, -1.0
+    for off in range(w_p - w_l + 1):
+        score = 0.0
+        for k in range(arr.shape[0]):
+            v = arr[k, sample]
+            m = ~np.isnan(v)
+            if not m.any():
+                continue
+            ys = np.clip(np.round(v[m]).astype(int), 0, prob.shape[0] - 1)
+            score += float(prob[ys, sample[m] + off].sum())
+        if score > best_score:
+            best_score, best = score, off
+    return best
+
+
+def sharpen_apexes(arr: np.ndarray, prob: np.ndarray, thr: float = 0.12,
+                   win: int = 2, band: float = 40.0,
+                   off: int = 0) -> tuple[np.ndarray, dict]:
+    """Вернуть вершины, срезанные усреднением по столбцу.
+
+    Движок берёт координату линии как ЦЕНТР МАСС вероятностей в столбце
+    (signal_extractor.py, _extract_line_from_region). На прямом участке это
+    несмещённая оценка: чернила лежат симметрично вокруг настоящей кривой.
+    А на вершине симметрии нет — выше неё только полутолщина пера, а ниже вся
+    восходящая и нисходящая ветви, попавшие в тот же столбец. Центр масс из-за
+    этого садится ниже пика, и тем сильнее, чем пик острее.
+
+    Замерено на PTB-XL: амплитуда зубца R занижена на 12.7%, одинаково при любой
+    высоте зубца — что и предсказывает эта модель (потеря зависит от ШИРИНЫ
+    пика, а не от высоты).
+
+    Лечение: на вершине берём не центр масс, а КРАЙ чернил, и прибавляем
+    полутолщину. Полутолщину не задаём, а меряем по самой карте — на ровных
+    участках вертикальный размер чернил в столбце равен полной толщине пера
+    вместе с ореолом сети.
+
+    Правим ТОЛЬКО вершины: на склонах центр масс верен, и трогать его нельзя,
+    иначе вся линия уедет вверх.
+    """
+    out = arr.copy()
+    H, W_prob = prob.shape
+    W = arr.shape[1]                       # столбцы считаем в системе ЛИНИЙ
+    ink = prob > thr
+    stat = {"peaks": 0, "shift_px": []}
+
+    for k in range(arr.shape[0]):
+        row = arr[k]
+        ok = ~np.isnan(row)
+        if ok.sum() < 20:
+            continue
+        # Полоса вокруг своей линии: иначе в столбце попадутся чернила соседней.
+        top = np.full(W, np.nan)
+        bot = np.full(W, np.nan)
+        for x in np.flatnonzero(ok):
+            xp = x + off                       # тот же столбец в системе КАРТЫ
+            if not (0 <= xp < W_prob):
+                continue
+            y0 = int(round(row[x]))
+            lo, hi = max(0, y0 - int(band)), min(H, y0 + int(band) + 1)
+            col = np.flatnonzero(ink[lo:hi, xp])
+            if len(col):
+                top[x] = lo + col[0]
+                bot[x] = lo + col[-1]
+
+        # полутолщина: по ровным участкам, где центр масс заведомо не смещён
+        slope = np.full(W, np.nan)
+        idx = np.flatnonzero(ok)
+        slope[idx[1:-1]] = (row[idx[2:]] - row[idx[:-2]]) / 2.0
+        flat = np.abs(slope) < 0.3
+        thick = (bot - top) / 2.0
+        half = float(np.nanmedian(thick[flat & ~np.isnan(thick)])) if np.any(
+            flat & ~np.isnan(thick)) else 1.0
+        if not np.isfinite(half):
+            half = 1.0
+
+        # вершины: смена знака наклона
+        s = np.where(np.isnan(slope), 0.0, slope)
+        for x in idx[1:-1]:
+            if np.isnan(row[x]) or np.isnan(top[x]):
+                continue
+            a, b = s[max(x - 1, 0)], s[min(x + 1, W - 1)]
+            lo, hi = max(0, x - win), min(W, x + win + 1)
+            if a < 0 and b > 0:                     # вершина вверх (y убывает)
+                edge = np.nanmin(top[lo:hi])
+                cand = edge + half
+                if np.isfinite(cand) and cand < row[x]:
+                    stat["shift_px"].append(float(row[x] - cand))
+                    out[k, x] = cand
+                    stat["peaks"] += 1
+            elif a > 0 and b < 0:                   # вершина вниз
+                edge = np.nanmax(bot[lo:hi])
+                cand = edge - half
+                if np.isfinite(cand) and cand > row[x]:
+                    stat["shift_px"].append(float(cand - row[x]))
+                    out[k, x] = cand
+                    stat["peaks"] += 1
+    stat["median_shift_px"] = (round(float(np.median(stat["shift_px"])), 2)
+                               if stat["shift_px"] else 0.0)
+    stat.pop("shift_px")
+    return out, stat
+
+
+def restore_apexes_in_place(wrapper, got: dict, sig: dict) -> dict | None:
+    """Вернуть срезанные вершины и пересчитать по ним сигнал.
+
+    Пересчёт обязателен: если поправить только линии, поправленной окажется
+    картинка, а в CSV останутся срезанные амплитуды. Привязку к отведениям
+    зовём ИХ ЖЕ (`wrapper.identifier`) — это их публичный шаг, их код не тронут.
+    """
+    lines, prob = sig.get("raw_lines"), got.get("aligned", {}).get("signal_prob")
+    if lines is None or prob is None:
+        return None
+    p = prob.squeeze().cpu().numpy()
+    arr = lines.cpu().numpy() if hasattr(lines, "cpu") else np.asarray(lines)
+    if arr.ndim == 1:
+        arr = arr[None, :]
+    if p.ndim != 2 or arr.shape[1] > p.shape[1]:
+        print(f"[twin] вершины не правим: линии {arr.shape} против карты {p.shape}")
+        return None
+
+    off = x_offset(arr, p)
+    fixed, stat = sharpen_apexes(arr, p, off=off)
+    stat["x_offset"] = off
+    tensor = torch.from_numpy(fixed).float()
+    try:
+        layout = wrapper.identifier(
+            tensor, got["aligned"]["text_prob"],
+            got["pixel_spacing_mm"]["average_pixel_per_mm"],
+            layout_should_include_substring=None)
+    except Exception as exc:
+        print(f"[twin] привязка после правки вершин не удалась: {exc}")
+        return None
+
+    sig["raw_lines"] = tensor
+    if layout.get("canonical_lines") is not None:
+        sig["canonical_lines"] = layout["canonical_lines"]
+        sig["lines"] = layout.get("lines")
+        sig["layout_matching_cost"] = layout.get("cost", 1.0)
+        got["layout_name"] = layout.get("layout", got.get("layout_name", ""))
+    print(f"[twin] вершин поправлено {stat['peaks']}, "
+          f"медианный подъём {stat['median_shift_px']} px")
+    return stat
+
+
+def row_coverage(arr: np.ndarray, mm_y: float) -> list[float]:
+    """Доля ширины содержимого, реально прослеженная в каждой СТРОКЕ плёнки.
+
+    Трассировщик отдаёт куски, а не строки: одна строка плёнки может прийти
+    двумя-тремя обрывками, и тогда куски надо сначала собрать по вертикальной
+    близости. Именно неполная строка — признак той поломки, при которой имена
+    отведений съезжают: раздаются они по позициям найденных кусков, поэтому
+    один потерянный кусок портит все двенадцать имён разом.
+    """
+    if arr.size == 0:
+        return []
+    med = np.array([np.nanmedian(r) if np.any(~np.isnan(r)) else np.nan for r in arr])
+    ok = ~np.isnan(med)
+    if not ok.any():
+        return []
+    med, arr = med[ok], arr[ok]
+    order = np.argsort(med)
+    med, arr = med[order], arr[order]
+
+    # порог «та же строка»: половина типичного расстояния между строками
+    gaps = np.diff(med)
+    step = float(np.median(gaps)) if len(gaps) else 0.0
+    if step <= 0:
+        step = 8 * mm_y if mm_y else 40.0
+    tol = max(0.4 * step, 3 * mm_y if mm_y else 20.0)
+
+    groups, cur = [], [0]
+    for i in range(1, len(med)):
+        if med[i] - med[cur[-1]] <= tol:
+            cur.append(i)
+        else:
+            groups.append(cur)
+            cur = [i]
+    groups.append(cur)
+
+    xs = np.flatnonzero(np.any(~np.isnan(arr), axis=0))
+    if len(xs) == 0:
+        return []
+    width = int(xs[-1]) - int(xs[0]) + 1
+    out = []
+    for g in groups:
+        seen = np.any(~np.isnan(arr[g]), axis=0)[int(xs[0]):int(xs[-1]) + 1]
+        out.append(float(seen.mean()) if width else 0.0)
+    return out
 
 
 def rhythm_lead(canonical, default: str = "II") -> str:
@@ -355,6 +563,11 @@ def main():
     ap.add_argument("-i", "--image", required=True)
     ap.add_argument("-o", "--out_base", required=True, help="префикс выходных файлов")
     ap.add_argument("--layouts", default=None, help="наш configs/oecg_layouts.yml для подписей")
+    ap.add_argument("--sharpen", action=argparse.BooleanOptionalAction, default=True,
+                    help="возвращать срезанные вершины по карте вероятностей")
+    ap.add_argument("--input-scale", dest="input_scale", type=float, default=1.0,
+                    help="во сколько раз конвейер растянул исходный снимок "
+                         "(нужно, чтобы честно посчитать детализацию оригинала)")
     a = ap.parse_args()
 
     cfg = get_cfg()
@@ -365,6 +578,11 @@ def main():
     got = wrapper(image, layout_should_include_substring=None)
 
     sig = got.get("signal", {})
+    # Вершины возвращаем ДО сохранения CSV: иначе в сигнал уйдут срезанные
+    # амплитуды, а поправлен окажется только рисунок.
+    apex_stat = None
+    if a.sharpen:
+        apex_stat = restore_apexes_in_place(wrapper, got, sig)
     save_csv(sig.get("canonical_lines"), a.out_base)
 
     # метаданные раскладки — в их же формате
@@ -396,6 +614,9 @@ def main():
         rows, _, _ = lead_grid(got.get("layout_name", ""), a.layouts) if a.layouts \
             else (None, 1, 0)
         arr = _sorted_lines(lines)
+        # Сырой выход трассировщика — для разбора поломок: по нему видно, какие
+        # куски он вообще нашёл, до всякой привязки к отведениям.
+        np.save(a.out_base + "_lines.npy", arr)
         box = content_box(arr, (H, W), mmx, mmy)
         draw_twin(arr, box, (H, W), mmx, mmy, a.out_base + "_twin.png",
                   lead_rows=rows, rhythm_name=rhythm_lead(sig.get("canonical_lines")))
@@ -406,6 +627,29 @@ def main():
         # милливольты. Печатаем, чтобы её можно было сверить со стендом.
         print(f"[twin] масштаб сетки: {1/mmx:.3f} px/мм по x, {1/mmy:.3f} px/мм по y"
               if mmx > 0 and mmy > 0 else "[twin] масштаб сетки не определён")
+
+        # Отчёт о качестве разбора — по нему сайт решает, можно ли доверять
+        # результату. Масштаб пересчитываем на ИСХОДНЫЙ снимок: конвейер мелкие
+        # фото растягивает, и на растянутой картинке px/мм выглядят приличными,
+        # хотя деталей столько же, сколько было.
+        # ДЕЛИМ на коэффициент: если снимок растянули в 1.56 раза, то на каждый
+        # миллиметр приходится в 1.56 раза меньше НАСТОЯЩИХ пикселей, чем
+        # намерено на обработанной картинке.
+        detail_x = (1 / mmx) / a.input_scale if mmx > 0 else 0.0
+        detail_y = (1 / mmy) / a.input_scale if mmy > 0 else 0.0
+        cov = row_coverage(arr, mmy and 1 / mmy)
+        json.dump({"px_per_mm_processed": [round(1 / mmx, 2) if mmx else 0,
+                                           round(1 / mmy, 2) if mmy else 0],
+                   "px_per_mm_source": [round(detail_x, 2), round(detail_y, 2)],
+                   "input_scale": round(a.input_scale, 3),
+                   "n_lines": int(len(arr)),
+                   "row_coverage": [round(c, 3) for c in cov],
+                   "layout": got.get("layout_name", ""),
+                   "layout_cost": float(sig.get("layout_matching_cost", 1.0))},
+                  open(a.out_base + "_quality.json", "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=2)
+        print(f"[twin] детализация исходника {detail_y:.1f} px/мм, "
+              f"покрытие строк {[round(c, 2) for c in cov]}")
     else:
         cv2.imwrite(a.out_base + "_aligned.png", photo)
         print("[twin] линий нет — копия не построена")

@@ -128,6 +128,9 @@ def run_one(hea: Path, work: Path) -> dict | None:
     rd.CLIP_MV = CLIP_MV
     rd.render(str(npy), str(png), fs=FS_TRUTH,
               title=f"PTB-XL {name}")
+    # Печать в разном разрешении = разная детализация входа. Конвейер мелкие
+    # снимки РАСТЯГИВАЕТ до TARGET_W, поэтому так воспроизводится ровно тот
+    # случай, на котором ломается реальное фото: размер большой, деталей мало.
 
     out = work / name
     od.digitize(str(png), str(out), layout=LAYOUT)
@@ -197,10 +200,14 @@ def main():
     ap.add_argument("--data", default=str(ROOT / "data" / "ptbxl"))
     ap.add_argument("-o", "--out", default=str(ROOT / "output" / "validate"))
     ap.add_argument("--fresh", action="store_true", help="считать заново, не докатывать")
+    ap.add_argument("--dpi", type=int, default=rd.DPI,
+                    help="разрешение печати плёнки: 200 dpi ≈ 7.9 px/мм")
     a = ap.parse_args()
 
-    work = Path(a.out)
+    rd.DPI = a.dpi
+    work = Path(a.out if a.dpi == 200 else f"{a.out}_dpi{a.dpi}")
     work.mkdir(parents=True, exist_ok=True)
+    print(f"печать {a.dpi} dpi = {a.dpi / 25.4:.1f} px/мм детализации")
     heas = sorted(Path(a.data).glob("*.hea"))[:a.count]
     if not heas:
         raise SystemExit(f"нет записей в {a.data} — сначала скачай PTB-XL")
@@ -223,7 +230,10 @@ def main():
         try:
             r = run_one(hea, work)
         except Exception as exc:
-            r = {"record": hea.stem, "failed": str(exc)[:120]}
+            # Не обрезаем в лог: из 120 символов диагноза не собрать, а падения
+            # движка — самое частое, что тут приходится разбирать.
+            print(f"--- {hea.stem} упал ---\n{exc}\n", flush=True)
+            r = {"record": hea.stem, "failed": str(exc)[-400:]}
         if r is None:
             continue
         rows.append(r)

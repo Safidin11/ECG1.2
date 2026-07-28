@@ -43,8 +43,14 @@ EXTRACTOR = {"threshold_sum": 1.0, "label_thresh": 0.05, "threshold_line_in_mask
              "min_line_width": 10}
 
 
-def prepare_image(src: str, dst: Path, target_w: int = TARGET_W) -> tuple[int, int]:
-    """Привести любое фото к тому, что движок точно съест: 8-бит BGR, ~target_w."""
+def prepare_image(src: str, dst: Path, target_w: int = TARGET_W) -> tuple[int, int, float]:
+    """Привести любое фото к тому, что движок точно съест: 8-бит BGR, ~target_w.
+
+    Третьим значением возвращает КОЭФФИЦИЕНТ РАСТЯЖЕНИЯ (>1, если снимок
+    пришлось увеличивать). Он нужен дальше по конвейеру: растяжение делает
+    картинку больше, но деталей не добавляет, и без этого числа мелкий снимок
+    выглядит полноценным — именно на этом ломался разбор.
+    """
     img = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
     if img is None:
         raise RuntimeError(f"не удалось прочитать картинку: {src}")
@@ -60,12 +66,14 @@ def prepare_image(src: str, dst: Path, target_w: int = TARGET_W) -> tuple[int, i
     # не косметика: на 1000 px линия отведения толщиной в пиксель, и сеть
     # относит слабые/плоские отведения к фону (замерено: aVF/V3/V6 = 0%
     # против 24-25% после увеличения до 2000 px).
+    scale = 1.0
     if abs(img.shape[1] - target_w) > 2:
-        h = int(round(img.shape[0] * target_w / img.shape[1]))
+        scale = target_w / img.shape[1]
+        h = int(round(img.shape[0] * scale))
         interp = cv2.INTER_CUBIC if img.shape[1] < target_w else cv2.INTER_AREA
         img = cv2.resize(img, (target_w, h), interpolation=interp)
     cv2.imwrite(str(dst), img)
-    return img.shape[1], img.shape[0]
+    return img.shape[1], img.shape[0], scale
 
 
 CONFIG_TEMPLATE = """MODEL:
@@ -171,7 +179,7 @@ def digitize(input_path: str, out_dir: str,
              resample: int = RESAMPLE, target_w: int = TARGET_W,
              threads: int = 4, device: str = "auto",
              layout: str | None = None, rotate: bool = False,
-             extractor: dict | None = None) -> Path:
+             extractor: dict | None = None, sharpen: bool = True) -> Path:
     """Оцифровать одно фото внешним движком. Возвращает папку с результатом.
 
     layout — задать формат ЖЁСТКО (имя из layout_names()); None = пусть
@@ -192,19 +200,22 @@ def digitize(input_path: str, out_dir: str,
                                 "import torch;print('mps' if torch.backends.mps.is_available() else 'cpu')"],
                                capture_output=True, text=True)
         device = probe.stdout.strip() or "cpu"
-    out = Path(out_dir)
+    # Абсолютный путь обязателен: обработчик запускается с рабочим каталогом
+    # ДВИЖКА, и относительный путь у него разрешится не туда.
+    out = Path(out_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         in_dir = tmp / "in"
         in_dir.mkdir()
         name = Path(input_path).stem
-        w, h = prepare_image(input_path, in_dir / f"{name}.png", target_w)
+        w, h, scale = prepare_image(input_path, in_dir / f"{name}.png", target_w)
         lay_path = layouts or str(LAYOUTS_YML)
         if layout:                            # формат задан вручную -> список из одной раскладки
             lay_path = str(_single_layout_yml(layout, tmp / "layout.yml"))
         print(f"[oecg] вход {w}x{h}, внутренний размер {resample}, устройство {device}, "
-              f"формат {layout or 'авто'}")
+              f"формат {layout or 'авто'}"
+              + (f", снимок растянут в {scale:.2f}x" if scale > 1.02 else ""))
         cfg = tmp / "cfg.yml"
         cfg.write_text(CONFIG_TEMPLATE.format(layouts=lay_path, in_dir=in_dir, out_dir=out,
                                               resample=resample, device=device,
@@ -219,7 +230,8 @@ def digitize(input_path: str, out_dir: str,
         proc = subprocess.run(
             [str(OECG_PY), str(worker), "-c", str(cfg),
              "-i", str(in_dir / f"{name}.png"), "-o", str(out / name),
-             "--layouts", str(LAYOUTS_YML)],
+             "--layouts", str(LAYOUTS_YML), "--input-scale", f"{scale:.6f}",
+             ("--sharpen" if sharpen else "--no-sharpen")],
             cwd=str(OECG_DIR), capture_output=True, text=True, env=env,
         )
         for line in proc.stdout.splitlines():

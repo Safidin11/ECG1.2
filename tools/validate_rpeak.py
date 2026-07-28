@@ -43,9 +43,16 @@ def r_peaks(x: np.ndarray, fs: int) -> np.ndarray:
 
 
 def main():
-    work = ROOT / "output" / "validate"
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dir", default=str(ROOT / "output" / "validate"))
+    ap.add_argument("--limit", type=int, default=0, help="только первые N записей")
+    a = ap.parse_args()
+
+    work = Path(a.dir)
     pairs = []
-    for d in sorted(p for p in work.iterdir() if p.is_dir()):
+    dirs = sorted(p for p in work.iterdir() if p.is_dir())
+    for d in (dirs[:a.limit] if a.limit else dirs):
         hea = ROOT / "data" / "ptbxl" / f"{d.name}.hea"
         csvs = list(d.glob("*_timeseries_canonical.csv"))
         if not hea.exists() or not csvs:

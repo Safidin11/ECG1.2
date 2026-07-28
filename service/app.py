@@ -31,6 +31,66 @@ from ecg_leads import consistency, reconstruct_limb   # noqa: E402
 from ecg_measure import best_lead, heart_rate         # noqa: E402
 from oecg_render import FS                            # движок отдаёт 1000 Гц
 
+# --- пороги доверия к разбору ---------------------------------------------
+# Главный смысл: не выдавать молча правдоподобный мусор. Разбор ломается тихо —
+# покрытие в CSV выглядит здоровым, а внутри лежат перепутанные отведения,
+# потому что имена раздаются по позициям найденных кусков и один потерянный
+# кусок сдвигает все двенадцать.
+# Детализация ИСХОДНИКА, пикселей на миллиметр плёнки. Числа не с потолка:
+# прогон PTB-XL при 3.5 / 4.5 / 5.5 / 6.7 / 7.9 px/мм показал, что на ЧИСТЫХ
+# плёнках развал начинается ниже 4.5 (5 записей из 6, 58 отведений из 72),
+# а качество выходит на полку к 5.5-6.7. Реальному фото тяжелее — смаз, сжатие,
+# перспектива — поэтому берём запас: ниже 6 отказ, 6-8 предупреждение.
+# Две реальные точки в подтверждение: 4.1 px/мм сломалось, 12.5 разобралось.
+MIN_PX_PER_MM = 6.0
+LOW_PX_PER_MM = 8.0
+MIN_ROW_COVERAGE = 0.85    # строка плёнки должна быть прослежена почти целиком
+MAX_RESIDUAL = 0.15        # невязка связей отведений
+
+
+def quality_problems(q: dict | None, check: dict | None) -> list[dict]:
+    """Причины не доверять результату. Пустой список = проверки пройдены."""
+    out: list[dict] = []
+    if q:
+        detail = min(q.get("px_per_mm_source") or [0, 0])
+        if detail and detail < LOW_PX_PER_MM:
+            out.append({"level": "red" if detail < MIN_PX_PER_MM else "warn",
+                        "what": f"Снимок мелковат: {detail:.1f} пикселя на миллиметр "
+                                f"плёнки (уверенно работаем от {LOW_PX_PER_MM:.0f}).",
+                        "why": "Мелкие снимки конвейер растягивает, но деталей от этого "
+                               "не прибавляется: тонкие участки линии сливаются, и куски "
+                               "теряются. Переснимите крупнее — той же камерой, но ближе, "
+                               "или пришлите исходник без сжатия."})
+        bad = [i for i, c in enumerate(q.get("row_coverage") or [])
+               if c < MIN_ROW_COVERAGE]
+        if bad:
+            cov = q.get("row_coverage") or []
+            out.append({"level": "red",
+                        "what": "Строки прослежены не полностью: "
+                                + ", ".join(f"{i+1}-я на {100*cov[i]:.0f}%" for i in bad) + ".",
+                        "why": "Имена отведений раздаются по позициям найденных кусков, "
+                               "поэтому потерянный кусок сдвигает все двенадцать имён. "
+                               "Подписям на копии верить нельзя."})
+        if q.get("layout_cost", 0) > 0.3:
+            out.append({"level": "warn",
+                        "what": f"Формат опознан неуверенно (цена {q['layout_cost']:.2f}).",
+                        "why": "Выберите формат вручную в списке выше."})
+    if check is not None:
+        resid = check.get("residual")
+        if resid is None:
+            out.append({"level": "red",
+                        "what": "Сверку связей отведений выполнить не удалось.",
+                        "why": "Отведения от конечностей связаны формулами (II = I + III "
+                               "и другие) — это наша единственная независимая проверка того, "
+                               "что имена не перепутаны. Для неё нужны три отведения "
+                               "одновременно, а их в разборе нет. «Проверить не смогли» — "
+                               "это не то же самое, что «всё хорошо»."})
+        elif resid > MAX_RESIDUAL:
+            out.append({"level": "red",
+                        "what": f"Связи отведений не сходятся: невязка {100*resid:.0f}%.",
+                        "why": "Либо имена перепутаны, либо линия прочитана неверно."})
+    return out
+
 # Формат ЭКГ: имя раскладки движка -> понятная подпись. Первый пункт — авто.
 FORMATS = [
     ("", "Определить автоматически"),
@@ -167,6 +227,19 @@ summary:hover{color:var(--ink)}
 .err{background:color-mix(in srgb,var(--err) 12%,var(--card));
   border-color:color-mix(in srgb,var(--err) 35%,transparent)}
 .err b{display:block;margin-bottom:5px;font-size:15px;color:var(--err)}
+.alarm{background:color-mix(in srgb,var(--err) 14%,var(--card));
+  border:1px solid color-mix(in srgb,var(--err) 45%,transparent);
+  border-radius:12px;padding:16px 18px;margin-bottom:18px}
+.alarm>b{display:block;font-size:16px;color:var(--err);margin-bottom:6px}
+.alarm>p{color:var(--mut);font-size:13.5px;margin-bottom:10px}
+.alarm ul{list-style:none;display:grid;gap:10px}
+.alarm li{padding-left:16px;border-left:2px solid color-mix(in srgb,var(--err) 45%,transparent)}
+.alarm li b{color:var(--ink);font-size:14px}
+.alarm li span{color:var(--mut);font-size:13px;line-height:1.5}
+.alarm li.warn{border-left-color:color-mix(in srgb,var(--warn) 60%,transparent)}
+.alarm.caution{background:color-mix(in srgb,var(--warn) 12%,var(--card));
+  border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.alarm.caution>b{color:var(--warn)}
 .files{font-size:12.5px;color:var(--mut);margin-top:16px;
   padding-top:15px;border-top:1px solid var(--line)}
 .files code{background:var(--bg2);padding:2px 7px;border-radius:5px;
@@ -233,6 +306,21 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
       <span class=badge>{{r.secs}} с</span>
     </div>
   </div>
+
+  {% if r.problems %}
+  {% set red = r.problems | selectattr('level','equalto','red') | list %}
+  <div class="alarm {{'caution' if not red else ''}}">
+    <b>{{'Результату доверять нельзя' if red else 'К результату есть замечания'}}</b>
+    <p>{{'Разбор прошёл, но проверки не пройдены — ниже что именно.' if red
+        else 'Разбор прошёл, проверки пройдены, но есть на что обратить внимание.'}}
+      Картинки показываем, чтобы было видно, где сломалось.</p>
+    <ul>
+      {% for p in r.problems %}
+      <li class="{{p.level}}"><b>{{p.what}}</b><br><span>{{p.why}}</span></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
 
   <figure>
     <figcaption><b>Цифровая копия</b> — та же геометрия, что на снимке; линия построена по данным</figcaption>
@@ -382,11 +470,18 @@ def digitize_route():
         j = best_lead(sig, names)
         hr = heart_rate(sig[:, j], FS) if j is not None else None
 
+        # Проверки доверия: сверку связей берём ДО восстановления по связям —
+        # после него она проверяла бы наши же вычисления и всегда сходилась.
+        qfiles = list(engine_out.glob("*_quality.json"))
+        qual = json.loads(qfiles[0].read_text(encoding="utf-8")) if qfiles else None
+        problems = quality_problems(qual, check)
+
         (run_dir / "result.json").write_text(json.dumps(
             {"layout": layout, "chosen": chosen or None, "cost": cost,
              "coverage": cov, "coverage_before": cov_before, "seconds": secs,
              "consistency": check, "reconstructed": rep["filled"],
-             "heart_rate": hr, "hr_lead": (names[j] if j is not None else None)},
+             "heart_rate": hr, "hr_lead": (names[j] if j is not None else None),
+             "quality": qual, "problems": problems},
             ensure_ascii=False, indent=2), encoding="utf-8")
 
         resid = check.get("residual")
@@ -394,7 +489,7 @@ def digitize_route():
                                     "leads": leads, "n_leads": n_leads, "secs": secs,
                                     "manual": bool(chosen), "upload": src.name, "twin": has_twin, "stages": has_stages,
                                     "filled": filled, "filled_sec": round(filled / 1000.0, 1),
-                                    "hr": hr,
+                                    "hr": hr, "problems": problems,
                                     "resid": resid,
                                     "resid_ok": (resid is not None and resid < 0.15),
                                     "resid_txt": (f"{100*resid:.0f}%" if resid is not None
