@@ -58,7 +58,7 @@ data/samples/        # тестовые картинки
 configs/pipeline.yml # пути, параметры, флаги enabled
 tools/               # вспомогательные скрипты
   ecg_measure.py     #   ЧСС и усреднённый комплекс — основа измерений
-  ecg_delineate.py   #   разметка P/QRS/T, интервалы, ось, ST
+  ecg_delineate.py   #   разметка P/QRS/T, интервалы, три оси, ST
   ecg_card.py        #   карточка измерений: плитки, комплексы, круг оси
   validate_ptbxl.py  #   точность оцифровки на PTB-XL
   validate_measure.py#   точность измерений против Glasgow и GE 12SL
@@ -243,7 +243,7 @@ tools/share.sh          # печатает публичный адрес https:/
 
 ---
 
-## Измерения: PQ, QRS, QT/QTc, ось, ST, индекс Соколова
+## Измерения: P, PQ, QRS, QT/QTc, оси P/QRS/T, ST, индекс Соколова
 
 `tools/ecg_delineate.py` считает по оцифрованному сигналу то же, что печатает
 на ленте настоящий кардиограф.
