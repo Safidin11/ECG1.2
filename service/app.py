@@ -296,15 +296,7 @@ summary:hover{color:var(--ink)}
 .alarm{background:color-mix(in srgb,var(--err) 14%,var(--card));
   border:1px solid color-mix(in srgb,var(--err) 45%,transparent);
   border-radius:12px;padding:16px 18px;margin-bottom:18px}
-.alarm>summary{padding:0;color:inherit;display:block}
-.alarm>summary:hover b{text-decoration:underline}
-.alarm>summary:before{content:"▸";color:var(--err);font-size:15px;
-  float:left;margin:1px 8px 0 0;transition:.15s}
-.alarm[open]>summary:before{transform:rotate(90deg)}
-.alarm[open]>summary{margin-bottom:12px}
-.alarm>summary b,.alarm>b{display:block;font-size:16px;color:var(--err);margin-bottom:3px}
-.alarm>summary span{display:block;color:var(--mut);font-size:13px}
-.alarm>p{color:var(--mut);font-size:13.5px;margin-bottom:10px}
+.alarm>b{display:block;font-size:16px;color:var(--err);margin-bottom:3px}
 .alarm ul{list-style:none;display:grid;gap:10px}
 .alarm li{padding-left:16px;border-left:2px solid color-mix(in srgb,var(--err) 45%,transparent)}
 .alarm li b{color:var(--ink);font-size:14px}
@@ -312,8 +304,7 @@ summary:hover{color:var(--ink)}
 .alarm li.warn{border-left-color:color-mix(in srgb,var(--warn) 60%,transparent)}
 .alarm.caution{background:color-mix(in srgb,var(--warn) 12%,var(--card));
   border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
-.alarm.caution>b,.alarm.caution>summary b{color:var(--warn)}
-.alarm.caution>summary:before{color:var(--warn)}
+.alarm.caution>b{color:var(--warn)}
 /* --- карточка измерений ------------------------------------------------- */
 /* Шесть величин и круг осей. Круг — обычная клетка ряда, поэтому при сужении
    он переносится вместе со всеми и отдельной вёрстки не требует. */
@@ -488,27 +479,10 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     </div>
   </div>
 
-  {% if r.problems %}
-  {% set red = r.problems | selectattr('level','equalto','red') | list %}
-  {# Заголовок виден всегда, разбор причин — под стрелкой. Прятать целиком
-     нельзя: «доверять нельзя» — это главное, что надо знать о результате.
-     А вот пять абзацев объяснений, зачем нужна сходимость отведений и почему
-     мелкий снимок не спасти растяжкой, нужны не каждый раз. #}
-  <details class="alarm {{'caution' if not red else ''}}">
-    <summary>
-      <b>{{'Результату доверять нельзя' if red else 'К результату есть замечания'}}</b>
-      <span>{{r.problems|length}}
-        {{'замечание' if r.problems|length == 1 else 'замечания' if r.problems|length < 5 else 'замечаний'}}
-        — {{'проверки не пройдены' if red else 'проверки пройдены, но есть на что посмотреть'}},
-        нажми, чтобы прочитать</span>
-    </summary>
-    <ul>
-      {% for p in r.problems %}
-      <li class="{{p.level}}"><b>{{p.what}}</b><br><span>{{p.why}}</span></li>
-      {% endfor %}
-    </ul>
-  </details>
-  {% endif %}
+  {# Плашки «результату доверять нельзя» на странице больше нет — убрана по
+     просьбе. Сами проверки никуда не делись: их список лежит в result.json и
+     в копируемом JSON, а коротко состояние видно по значкам вверху (формат,
+     число отведений, сходимость связей) — они краснеют, когда что-то не так. #}
 
   <figure>
     <figcaption><b>Цифровая копия</b> — та же геометрия, что на снимке; линия построена по данным</figcaption>
