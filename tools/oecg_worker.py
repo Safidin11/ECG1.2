@@ -44,6 +44,8 @@ LABEL = (58, 58, 58)             # #3A3A3A
 SEP = (196, 199, 204)            # границы отведений — заметные, но спокойные
 SS = 3                           # суперсэмплинг: трасса рисуется крупнее и
                                  # усредняется — отсюда сглаженные края
+MM_PER_S = 25.0                  # стандартная скорость протяжки плёнки
+MIN_PULSE_ROWS = 5               # меньше — не семейство, а совпадение
 
 # Шрифт подписей: сначала системный SF Pro (Semibold), потом Helvetica Neue.
 FONTS = (("/System/Library/Fonts/SFNS.ttf", 0, "Semibold"),
@@ -67,13 +69,46 @@ def _font(px: int):
     return ImageFont.load_default()
 
 
-def save_csv(canonical, base: str) -> None:
-    """Дословно их формат: (отсчёты, отведения), заголовок — имена отведений."""
+def _resample_nan(row: np.ndarray, n_out: int) -> np.ndarray:
+    """Пересчитать ряд на другую длину, сохранив пропуски пропусками.
+
+    Обычная интерполяция протянула бы прямую через дыру и выдала бы за сигнал
+    то, чего на плёнке нет. Поэтому отдельно переносим и саму «дырявость».
+    """
+    n = len(row)
+    ok = ~np.isnan(row)
+    if ok.sum() < 2:
+        return np.full(n_out, np.nan)
+    src, dst = np.arange(n, dtype=float), np.linspace(0, n - 1, n_out)
+    out = np.interp(dst, src[ok], row[ok])
+    out[np.interp(dst, src, (~ok).astype(float)) > 0.5] = np.nan
+    return out
+
+
+def save_csv(canonical, base: str, gain: float = 1.0,
+             seconds: float | None = None, fs: int = 1000) -> None:
+    """Дословно их формат: (отсчёты, отведения), заголовок — имена отведений.
+
+    gain и seconds — поправка по калибровочному импульсу. Движок берёт масштаб
+    плёнки из миллиметровки; когда её нет, число всё равно выдаётся, и оно
+    вымышленное. Импульс задаёт масштаб честно (1 мВ = 10 мм), а масштаб входит
+    и в милливольты, и в миллисекунды: на выгрузке из ЕМИАС промах был в 2.2
+    раза, ЧСС выходила 33 вместо 74.
+
+    seconds — настоящая длительность плёнки. Движок кладёт всю трассу в 10 с;
+    если плёнка короче, ряд надо укоротить, иначе всё окажется растянутым.
+    """
     if canonical is None:
         return
     data = canonical.squeeze().cpu().numpy()
     if data.ndim == 1:
         data = data[None, :]
+    if gain != 1.0:
+        data = data * gain
+    if seconds is not None:
+        n_out = max(2, int(round(seconds * fs)))
+        if n_out != data.shape[1]:
+            data = np.array([_resample_nan(r, n_out) for r in data])
     header = ",".join(LEAD_NAMES[:data.shape[0]])
     np.savetxt(base + "_timeseries_canonical.csv", data.T, delimiter=",",
                header=header, comments="")
@@ -583,7 +618,14 @@ def main():
     apex_stat = None
     if a.sharpen:
         apex_stat = restore_apexes_in_place(wrapper, got, sig)
-    save_csv(sig.get("canonical_lines"), a.out_base)
+    # CSV сохраняем ПОСЛЕ разбора геометрии: поправка по калибровочному импульсу
+    # считается там. Но САМ МАССИВ забираем здесь и копией: дальше по ходу
+    # построения копии он меняется — к каждому отведению добавляется смещение
+    # его строки на плёнке, и в файл уходили милливольты со сдвигом до -10 мВ.
+    canonical = sig.get("canonical_lines")
+    if canonical is not None:
+        canonical = torch.as_tensor(canonical).detach().clone()
+    csv_saved = False
 
     # метаданные раскладки — в их же формате
     name = os.path.basename(a.out_base)
@@ -662,6 +704,25 @@ def main():
                          else f"  РАСХОДИТСЯ С СЕТКОЙ в {pulse['ratio']:.2f} раза"))
         except Exception as exc:
             print(f"[twin] импульс не прочитан: {exc}")
+
+        # Применяем поправку, только когда импульс найден уверенно и заметно
+        # расходится с сеткой. Если они согласны — трогать нечего.
+        gain, secs = 1.0, None
+        if (pulse and pulse.get("ratio") and not pulse.get("agrees", True)
+                and pulse["rows"] >= MIN_PULSE_ROWS
+                and pulse["spread_px"] <= 0.08 * pulse["px"]):
+            gain = pulse["ratio"]
+            # Движок раскладывает всю трассу в 10 с. Настоящая длительность —
+            # ширина плёнки в миллиметрах, делённая на скорость 25 мм/с.
+            secs = arr.shape[1] / (pulse["px"] / 10.0) / MM_PER_S
+            pulse |= {"applied": True, "gain": round(gain, 4),
+                      "seconds": round(secs, 2)}
+            print(f"[twin] поправка по импульсу: амплитуды x{gain:.3f}, "
+                  f"плёнка {secs:.2f} с вместо 10")
+        elif pulse:
+            pulse["applied"] = False
+        save_csv(canonical, a.out_base, gain=gain, seconds=secs)
+        csv_saved = True
         json.dump({"px_per_mm_processed": [round(1 / mmx, 2) if mmx else 0,
                                            round(1 / mmy, 2) if mmy else 0],
                    "px_per_mm_source": [round(detail_x, 2), round(detail_y, 2)],
@@ -678,6 +739,11 @@ def main():
     else:
         cv2.imwrite(a.out_base + "_aligned.png", photo)
         print("[twin] линий нет — копия не построена")
+
+    # Страховка: если геометрию разобрать не удалось, сигнал всё равно нужен —
+    # просто без поправки по импульсу.
+    if not csv_saved:
+        save_csv(canonical, a.out_base)
 
 
 if __name__ == "__main__":
