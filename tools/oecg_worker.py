@@ -638,6 +638,30 @@ def main():
         detail_x = (1 / mmx) / a.input_scale if mmx > 0 else 0.0
         detail_y = (1 / mmy) / a.input_scale if mmy > 0 else 0.0
         cov = row_coverage(arr, mmy and 1 / mmy)
+
+        # Калибровочный импульс — независимая проверка масштаба. Движок берёт
+        # масштаб из миллиметровки; если её на плёнке нет, число всё равно
+        # выдаётся, и оно вымышленное. Импульс по определению 1 мВ = 10 мм, и
+        # когда он расходится с сеткой — верить надо ему.
+        pulse = None
+        try:
+            import calibration as cal
+            g = cv2.cvtColor(crop_pad(photo, box), cv2.COLOR_BGR2GRAY)
+            found = cal.find_pulse(g)
+            if found:
+                pulse = {"px": found["px"], "rows": found["n_rows"],
+                         "spread_px": found["spread_px"]}
+                sc = cal.scale_from_pulse(found["px"], 1 / mmy if mmy > 0 else 0)
+                if sc:
+                    pulse |= {"px_per_mm": round(sc["px_per_mm"], 2),
+                              "ratio": round(sc.get("ratio") or 0, 3),
+                              "agrees": bool(sc.get("agrees"))}
+                print(f"[twin] калибр-импульс {found['px']:.0f} px по "
+                      f"{found['n_rows']} строкам -> {found['px'] / 10:.2f} px/мм"
+                      + ("" if pulse.get("agrees", True)
+                         else f"  РАСХОДИТСЯ С СЕТКОЙ в {pulse['ratio']:.2f} раза"))
+        except Exception as exc:
+            print(f"[twin] импульс не прочитан: {exc}")
         json.dump({"px_per_mm_processed": [round(1 / mmx, 2) if mmx else 0,
                                            round(1 / mmy, 2) if mmy else 0],
                    "px_per_mm_source": [round(detail_x, 2), round(detail_y, 2)],
@@ -645,7 +669,8 @@ def main():
                    "n_lines": int(len(arr)),
                    "row_coverage": [round(c, 3) for c in cov],
                    "layout": got.get("layout_name", ""),
-                   "layout_cost": float(sig.get("layout_matching_cost", 1.0))},
+                   "layout_cost": float(sig.get("layout_matching_cost", 1.0)),
+                   "pulse": pulse},
                   open(a.out_base + "_quality.json", "w", encoding="utf-8"),
                   ensure_ascii=False, indent=2)
         print(f"[twin] детализация исходника {detail_y:.1f} px/мм, "
