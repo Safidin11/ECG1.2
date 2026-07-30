@@ -45,7 +45,12 @@ FS_TRUTH = 500
 FS_OURS = 1000
 
 # допуск, в пределах которого измерение считаем совпавшим
-TOL = {"pr_ms": 20.0, "qrs_ms": 12.0, "qt_ms": 25.0, "axis": 15.0}
+TOL = {"pr_ms": 20.0, "qrs_ms": 12.0, "qt_ms": 25.0, "axis": 15.0,
+       "p_ms": 20.0, "p_axis": 25.0, "t_axis": 25.0}
+# Ось зубца P допуск шире, чем ось комплекса, и не от лени: зубец P на порядок
+# мельче комплекса, поэтому его направление куда чувствительнее к изолинии.
+# Между двумя фирменными анализаторами расхождение по оси P само по себе
+# больше 20 градусов — требовать от себя меньшего бессмысленно.
 
 
 # Два независимых эталона на одних и тех же записях: анализаторы University of
@@ -77,11 +82,28 @@ def truth_table(path: Path, axis_col: str, st_col: str | None) -> dict[int, dict
             # фронтальной плоскости). Там в поле лежит заглушка, и сравнение с
             # ней меряло бы не нашу ошибку, а чужую отписку.
             indet = num("QRS_AxisIndet_Global")
+            # «Зубец P есть» — отдельный признак, и он ценнее длительности: по
+            # нему видно, теряем ли мы зубец вовсе. Потеря и ошибка на 10 мс —
+            # разные беды, и мерить их надо порознь.
+            #
+            # Считаем зубец существующим, если анализатор назвал его
+            # длительность, а не по флагу P_Found_Global. Флаг означает не то,
+            # что кажется: на пяти записях этого набора Glasgow ставит его в
+            # ноль, но тут же выдаёт и длительность зубца P, и интервал PQ, а
+            # второй анализатор на тех же записях ставит флаг в единицу. Все
+            # пять — тахикардия 127-151, где зубец P наезжает на зубец T. По
+            # флагу выходило бы, что мы пять раз «нашли несуществующее», хотя
+            # оба прибора зубец видят и меряют.
+            found = num("P_Dur_Global")
             out[i] = {
                 "pr_ms": num("PR_Int_Global"),
                 "qrs_ms": num("QRS_Dur_Global"),
                 "qt_ms": num("QT_Int_Global"),
                 "axis": None if indet else num(axis_col),
+                "p_found": None if found is None else bool(found),
+                "p_ms": num("P_Dur_Global"),
+                "p_axis": num("P_AxisFront_Global"),
+                "t_axis": num("T_AxisFront_Global"),
                 "hr": num("HR__Global"),
                 "rr_ms": num("RR_Mean_Global"),
                 "st": {ld: (num(st_col.format(ld)) if st_col else None)
@@ -96,8 +118,9 @@ def analyzer_spread(a: dict[int, dict], b: dict[int, dict],
     rows = []
     for i in ids:
         if i in a and i in b:
-            rows.append(diffs({**a[i], "axis": {"qrs": a[i]["axis"]}, "flags": []},
-                              b[i]))
+            rows.append(diffs({**a[i], "flags": [],
+                               "axis": {"qrs": a[i]["axis"], "p": a[i]["p_axis"],
+                                        "t": a[i]["t_axis"]}}, b[i]))
     return rows
 
 
@@ -115,12 +138,22 @@ def load_truth(hea: Path) -> tuple[np.ndarray, list[str]] | None:
 def diffs(ours: dict, want: dict) -> dict[str, float]:
     """Расхождения по каждому показателю. Ось — по кратчайшей дуге."""
     out = {}
-    for k in ("pr_ms", "qrs_ms", "qt_ms"):
+    for k in ("pr_ms", "qrs_ms", "qt_ms", "p_ms"):
         if ours.get(k) is not None and want.get(k) is not None:
             out[k] = float(ours[k] - want[k])
-    a, b = (ours.get("axis") or {}).get("qrs"), want.get("axis")
-    if a is not None and b is not None:
-        out["axis"] = float((a - b + 180) % 360 - 180)
+    arc = lambda u, v: float((u - v + 180) % 360 - 180)          # noqa: E731
+    for key, mine, theirs in (("axis", "qrs", "axis"), ("p_axis", "p", "p_axis"),
+                              ("t_axis", "t", "t_axis")):
+        a, b = (ours.get("axis") or {}).get(mine), want.get(theirs)
+        if a is not None and b is not None:
+            out[key] = arc(a, b)
+    # Потеря зубца — отдельный счёт, не ошибка в миллисекундах. Анализатор
+    # сказал «зубец есть», а мы его не нашли: интервала PQ просто нет, и в
+    # сравнение длительностей такая запись не попадёт вовсе — то есть молча
+    # улучшит статистику, выкинув из неё самые трудные случаи.
+    if want.get("p_found") is not None:
+        out["_p_want"] = 1.0 if want["p_found"] else 0.0
+        out["_p_got"] = 1.0 if ours.get("pr_ms") is not None else 0.0
     if ours.get("hr") and want.get("hr"):
         out["hr"] = float(ours["hr"] - want["hr"])
     if "qt" in ours.get("flags", []):
@@ -142,8 +175,10 @@ def report(rows: list[dict], title: str) -> None:
         return
     print(f"{'показатель':12s} {'n':>4s} {'медиана':>9s} {'|ошибка|':>9s} "
           f"{'90%':>7s} {'в допуске':>10s}")
-    for k, label in (("pr_ms", "PR, мс"), ("qrs_ms", "QRS, мс"), ("qt_ms", "QT, мс"),
-                     ("axis", "ось, °"), ("hr", "ЧСС, /мин"), ("st_uv", "ST, мкВ")):
+    for k, label in (("p_ms", "P, мс"), ("pr_ms", "PQ, мс"), ("qrs_ms", "QRS, мс"),
+                     ("qt_ms", "QT, мс"), ("axis", "ось QRS, °"),
+                     ("p_axis", "ось P, °"), ("t_axis", "ось T, °"),
+                     ("hr", "ЧСС, /мин"), ("st_uv", "ST, мкВ")):
         v = np.array([r[k] for r in rows if k in r])
         if not len(v):
             print(f"{label:12s} {'—':>4s}")
@@ -152,6 +187,19 @@ def report(rows: list[dict], title: str) -> None:
         ok = f"{100 * np.mean(np.abs(v) <= tol):9.0f}%" if tol else "—".rjust(10)
         print(f"{label:12s} {len(v):4d} {np.median(v):+9.1f} "
               f"{np.median(np.abs(v)):9.1f} {np.percentile(np.abs(v), 90):7.1f} {ok:>10s}")
+    # Находимость зубца P — отдельно от точности. Показатель «в допуске 94%»
+    # почти ничего не стоит, если половина записей в сравнение не попала из-за
+    # того, что зубца мы вовсе не нашли: выпадают как раз мелкие зубцы, то есть
+    # самые трудные, и статистика улучшается ровно от того, что мы их потеряли.
+    pw = [r for r in rows if "_p_want" in r]
+    if pw:
+        yes = [r for r in pw if r["_p_want"]]
+        no = [r for r in pw if not r["_p_want"]]
+        miss = sum(1 for r in yes if not r["_p_got"])
+        false = sum(1 for r in no if r["_p_got"])
+        print(f"зубец P: анализатор нашёл на {len(yes)} записях, мы потеряли "
+              f"{miss} ({100 * (1 - miss / max(len(yes), 1)):.0f}% находимость)"
+              + (f"; анализатор не нашёл на {len(no)}, мы «нашли» {false}" if no else ""))
     flag = sum(int("_flagged_qt" in r) for r in rows)
     print(f"записей сравнено: {len(rows)}"
           + (f", из них QT помечен нами как ненадёжный: {flag}" if flag else ""))
@@ -184,6 +232,71 @@ def run(hea_list: list[Path], gt: dict[int, dict], digit_dir: Path,
             else:
                 notes.append(f"B {hea.stem}: разметка не сошлась")
     return a_rows, b_rows, notes
+
+
+def erase_p(sig: np.ndarray, fs: int, rng: np.random.Generator,
+            span: tuple[int, int]) -> np.ndarray:
+    """Стереть зубец P, оставив всё остальное как было.
+
+    Нужно для замера ЛОЖНЫХ срабатываний. Находимость зубца P одна ничего не
+    доказывает: детектор, который говорит «зубец есть» всегда, покажет 100%.
+    А записей без зубца P (мерцательная аритмия, узловой ритм) в этом наборе
+    нет — значит их надо изготовить.
+
+    span — где зубец лежит относительно вершины R, в отсчётах; берётся из
+    собственной разметки этой же записи. Три попытки назначить это место по
+    геометрии («столько-то миллисекунд до комплекса», «первая точка на уровне
+    изолинии») кончились одинаково: стиралось не то, а тест исправно считал
+    оставшийся нетронутым зубец P ложной тревогой — 9, потом 22, потом 14
+    случаев из сорока, и все свои. Место надо брать измеренное.
+
+    Стираем прямой между концами участка плюс шум САМОГО участка — его же
+    дрожание, снятое как разница со сглаженной копией. Так исчезает только
+    зубец P, а уровень шума, на который детектор и опирается, остаётся прежним.
+    Заменить нулями было бы поблажкой: идеально гладкий участок распознать как
+    «пусто» легко. Зубец T при этом не трогаем: в настоящей мерцательной
+    аритмии он на месте, и не спутать его с зубцом P — часть задачи.
+    """
+    out = np.array(sig, float, copy=True)
+    j = int(np.argmax([np.nanstd(sig[:, i]) for i in range(sig.shape[1])]))
+    col0 = np.nan_to_num(sig[:, j])
+    peaks = dl.refine_peaks(col0, dl.r_peaks(col0, fs), fs)
+    pad = dl._ms(25, fs)
+    for i in range(sig.shape[1]):
+        col = np.nan_to_num(sig[:, i])
+        for r in peaks:
+            a, b = int(r) + span[0] - pad, int(r) + span[1] + pad
+            if a < 0 or b >= len(col) or b - a <= dl._ms(30, fs):
+                continue
+            seg = col[a:b]
+            sigma = float(np.std(seg - dl._smooth(seg, dl._ms(30, fs))))
+            out[a:b, i] = np.linspace(col[a], col[b], b - a) + rng.normal(0, sigma, b - a)
+    return out
+
+
+def specificity(hea_list: list[Path]) -> None:
+    """Как часто детектор находит зубец P там, где его нет."""
+    rng = np.random.default_rng(0)
+    false, total = 0, 0
+    for hea in hea_list:
+        t = load_truth(hea)
+        if not t:
+            continue
+        sig, names = t
+        m = dl.measure(sig, names, FS_TRUTH, simultaneous=True)
+        if not m or m["marks"]["p_on"] is None:
+            continue                    # стирать нечего: зубец и так не найден
+        mk, r = m["marks"], m["marks"]["r"]
+        m2 = dl.measure(erase_p(sig, FS_TRUTH, rng, (mk["p_on"] - r, mk["p_off"] - r)),
+                        names, FS_TRUTH, simultaneous=True)
+        if m2 is None:
+            continue
+        total += 1
+        if m2.get("pr_ms") is not None:
+            false += 1
+    print("\n=== ложные срабатывания: записи со СТЁРТЫМ зубцом P ===")
+    print(f"проверено {total}; зубец P «найден» на {false} "
+          f"({100 * false / max(total, 1):.0f}%)")
 
 
 def calibrate(hea_list: list[Path], gt: dict[int, dict]) -> None:
@@ -234,6 +347,8 @@ def main():
     ap.add_argument("--digitized", default=str(ROOT / "output" / "validate"))
     ap.add_argument("--stages", default="ab", help="a = эталон, b = после оцифровки")
     ap.add_argument("--calibrate", action="store_true")
+    ap.add_argument("--specificity", action="store_true",
+                    help="ложные срабатывания на записях со стёртым зубцом P")
     a = ap.parse_args()
 
     gtdir = Path(a.gt)
@@ -247,6 +362,9 @@ def main():
 
     if a.calibrate:
         calibrate(have, gt)
+        return
+    if a.specificity:
+        specificity(have)
         return
 
     a_rows, b_rows, notes = run(have, gt, Path(a.digitized), a.stages)
