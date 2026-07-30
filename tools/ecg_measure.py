@@ -198,10 +198,19 @@ def _align_shift(x: np.ndarray, ref: np.ndarray, max_shift: int,
     return best
 
 
-def representative_beat(seg: np.ndarray, peaks: np.ndarray, fs: int,
-                        min_corr: float = 0.9, pre_ms: float = PRE_MS,
-                        post_ms: float = POST_MS) -> tuple[np.ndarray, int] | None:
+def representative_beat(
+    seg: np.ndarray, peaks: np.ndarray, fs: int, min_corr: float = 0.9,
+    pre_ms: float = PRE_MS, post_ms: float = POST_MS,
+) -> tuple[np.ndarray, int, np.ndarray] | None:
     """Представительный комплекс: удары одного семейства, усреднённые СРЕДНИМ.
+
+    Возвращает вместе со средним и САМИ удары — стопкой, уже совмещённые и
+    отобранные. Нужны они для одной проверки, которую по среднему сделать
+    нельзя: связан ли найденный зубец P с комплексом. Зубец P приходит перед
+    каждым ударом в одно и то же время, поэтому усреднение его сохраняет; волны
+    мерцания предсердий с ударами не связаны и при усреднении гаснут как корень
+    из числа ударов. По одному только среднему эти два случая неразличимы — там
+    и там виден горб.
 
     Именно средним, а не медианой: шум в отсчёте гасится как корень из числа
     ударов, а медиана такого выигрыша не даёт и вдобавок рвёт гладкость формы.
@@ -244,7 +253,7 @@ def representative_beat(seg: np.ndarray, peaks: np.ndarray, fs: int,
     if not beats:
         return None
     if len(beats) == 1:                       # 2.5 с могут дать всего один удар
-        return _fill_edges(beats[0]), 1
+        return _fill_edges(beats[0]), 1, np.asarray(beats, float)
 
     beats = np.array(beats)
     core = slice(pre - int(0.06 * fs), pre + int(0.06 * fs))    # ±60 мс вокруг R
@@ -261,7 +270,8 @@ def representative_beat(seg: np.ndarray, peaks: np.ndarray, fs: int,
     if len(keep) < 2:                         # семейство не сложилось — берём лучший
         cors = [_nancorr(w, tmpl) or -1.0 for w in aligned]
         keep = [aligned[int(np.argmax(cors))]]
-    return _fill_edges(_mean_ignoring_gaps(keep)), len(keep)
+    return (_fill_edges(_mean_ignoring_gaps(keep)), len(keep),
+            np.asarray(keep, float))
 
 
 def _nancorr(a: np.ndarray, b: np.ndarray) -> float | None:

@@ -153,7 +153,7 @@ def _clean_peaks(peaks: np.ndarray, fs: int) -> np.ndarray:
 
 def _lead_beats(
     sig: np.ndarray, names: list[str], fs: int, simultaneous: bool
-) -> tuple[dict[str, np.ndarray], int, float, int] | None:
+) -> tuple[dict[str, np.ndarray], int, float, int, dict[str, np.ndarray]] | None:
     """Представительный комплекс по каждому отведению + позиция R и средний RR.
 
     Два режима.
@@ -174,13 +174,21 @@ def _lead_beats(
 
     ai = names.index(anchor)
     a0, a1 = longest_run(sig[:, ai])
-    apk = _clean_peaks(refine_peaks(sig[a0:a1, ai], r_peaks(sig[a0:a1, ai], fs), fs), fs)
-    if len(apk) < 2:
+    all_pk = refine_peaks(sig[a0:a1, ai], r_peaks(sig[a0:a1, ai], fs), fs)
+    apk = _clean_peaks(all_pk, fs)
+    if len(apk) < 2 or len(all_pk) < 2:
         return None
-    rr_ms = float(np.median(np.diff(apk))) * 1000.0 / fs
+    # Частоту берём по ВСЕМ ударам, а усредняем только похожие. Разделять
+    # обязательно. _clean_peaks выбрасывает удары с непохожим интервалом, и при
+    # мерцательной аритмии непохож каждый: в списке остаются редкие уцелевшие, а
+    # промежутки между ними охватывают по нескольку ударов. Медиана таких
+    # промежутков и уходила в частоту — на записях с мерцанием выходило 33 и 39
+    # ударов в минуту вместо семидесяти. За частотой тянулось всё остальное:
+    # окно поиска зубца P раздувалось до предела, и в него попадал чужой зубец T.
+    rr_ms = float(np.median(np.diff(all_pk))) * 1000.0 / fs
     pre, post = _beat_window(rr_ms)
 
-    beats, counts = {}, {}
+    beats, counts, stacks = {}, {}, {}
     for i, n in enumerate(names):
         span = longest_run(sig[:, i])
         if span is None or span[1] - span[0] < _ms(600, fs):
@@ -196,13 +204,14 @@ def _lead_beats(
             continue
         got = representative_beat(seg, pk, fs, pre_ms=pre, post_ms=post)
         if got:
-            beats[n], counts[n] = got
+            beats[n], counts[n], stacks[n] = got
     if len(beats) < 3:
         return None
-    return beats, _ms(pre, fs), rr_ms, max(counts.values())
+    return beats, _ms(pre, fs), rr_ms, max(counts.values()), stacks
 
 
 def _align_by_energy(beats: dict[str, np.ndarray], r_idx: int, fs: int,
+                     stacks: dict[str, np.ndarray] | None = None,
                      max_ms: float = 30) -> dict[str, np.ndarray]:
     """Совместить комплексы разных отведений по всплеску энергии QRS.
 
@@ -236,6 +245,11 @@ def _align_by_energy(beats: dict[str, np.ndarray], r_idx: int, fs: int,
             if score > best_score:
                 best_score, best = score, s
         out[n] = _shift(w, best)
+        # Стопку ударов двигаем тем же сдвигом: она должна остаться в тех же
+        # координатах, что и среднее, иначе проверка связи зубца P с комплексом
+        # смотрела бы на другое место.
+        if stacks is not None and n in stacks:
+            stacks[n] = np.array([_shift(r, best) for r in stacks[n]])
     return out
 
 
@@ -331,28 +345,58 @@ def _quiet(mag: np.ndarray, lo: int, hi: int, fs: int, win_ms: float = 40) -> fl
     return float(np.min(v.max(1) - v.min(1)))
 
 
-def _trough(mag: np.ndarray, peak_i: int, limit: int, fs: int,
-            hold_ms: float = 20) -> int:
-    """Ближайшая к вершине впадина в сторону предела.
+# Насколько далеко от впадины искать второй горб того же зубца P. Выемка у
+# двугорбого зубца (перегрузка левого предсердия, «P mitrale») идёт 40-60 мс —
+# 40 мс и есть признак, по которому его называют двугорбым. А до соседнего
+# события — зубца T или комплекса — при любом мыслимом ритме не меньше 150 мс.
+# Между этими числами и проходит граница.
+P_JOIN_MS = 100.0
 
-    Именно ближайшая, а не самая глубокая. Самую глубокую пробовал — она на
-    быстром ритме оказывается за вершиной чужого зубца T, у дальнего края окна.
-    Порог, отсчитанный от такого дна, лежит НИЖЕ этой вершины, и поиск начала
-    зубца P спокойно проходит сквозь неё: длительность выходила 295-298 мс и
-    запись отбраковывалась как невозможная. Опора должна быть той впадиной, из
-    которой зубец P поднялся, — то есть отрезком TP, а он рядом с ним.
+
+def _trough(mag: np.ndarray, peak_i: int, limit: int, fs: int,
+            peak: float | None = None, hold_ms: float = 20) -> int:
+    """Подножие зубца в сторону предела.
+
+    Ищем ближайшую впадину, а не самую глубокую. Самую глубокую пробовал — она
+    на быстром ритме оказывается за вершиной чужого зубца T, у дальнего края
+    окна. Порог, отсчитанный от такого дна, лежит НИЖЕ этой вершины, и поиск
+    начала зубца P спокойно проходит сквозь неё: длительность выходила 295-298
+    мс и запись отбраковывалась как невозможная. Опора должна быть той впадиной,
+    из которой зубец P поднялся, — то есть отрезком TP, а он рядом с ним.
+
+    Но «ближайшая впадина» сама по себе неверна для ДВУГОРБОГО зубца P: у него
+    между горбами выемка, и подножием объявлялась она. Мерилась тогда половина
+    зубца — на проверке двугорбый зубец в 140 мс выходил 74 мс. А ведь именно
+    ширина такого зубца и есть признак перегрузки левого предсердия, ради
+    которого его меряют.
+
+    Поэтому у каждой найденной впадины спрашиваем, что дальше: если в пределах
+    P_JOIN_MS кривая снова поднимается до половины высоты зубца — это второй
+    горб того же зубца, и идти надо дальше. Если нет — зубец кончился.
 
     Подъём подтверждаем выдержкой: mag сглажена, но мелкая рябь на ней
     остаётся, и без подтверждения дном объявлялась бы первая же рябинка.
     """
     step = 1 if limit > peak_i else -1
-    n = _ms(hold_ms, fs)
+    n, join = _ms(hold_ms, fs), _ms(P_JOIN_MS, fs)
     best = i = peak_i
+    armed = True
     while i != limit:
         i += step
         if mag[i] <= mag[best]:
-            best = i
-        elif abs(i - best) >= n:
+            best, armed = i, True
+        elif armed and abs(i - best) >= n:
+            if peak is None:
+                break
+            j0, j1 = sorted((best, best + step * join))
+            j0, j1 = max(0, j0), min(len(mag), j1)
+            half = mag[best] + 0.5 * (peak - mag[best])
+            if j1 > j0 and float(np.max(mag[j0:j1])) >= half:
+                # Второй горб того же зубца. Ход не рвём и не отматываем назад:
+                # отматывание к впадине зациклило бы поиск — та же впадина
+                # находилась бы снова и снова.
+                armed = False
+                continue
             break                       # держимся выше дна — значит оно позади
     return best
 
@@ -412,7 +456,7 @@ def p_bounds(mag: np.ndarray, qrs_on: int, fs: int,
 
     def bound(limit: int, step: int) -> int:
         """Дойти от вершины до порога над МЕСТНОЙ опорой, не дальше предела."""
-        foot = _trough(mag, peak_i, limit, fs)
+        foot = _trough(mag, peak_i, limit, fs, peak)
         floor = float(mag[foot])
         thr = floor + K_P * (peak - floor)
         i = peak_i
@@ -471,6 +515,54 @@ def p_confirmed(beats: dict[str, np.ndarray], base: dict[str, float],
         if float(np.max(np.abs(w[a:b] - base[n]))) >= P_MIN_MV:
             seen += 1
     return seen >= P_MIN_LEADS
+
+
+# Насколько отклонение должно пережить усреднение по ударам, чтобы считаться
+# зубцом P. Единица — «сохранилось полностью», то есть событие приходит перед
+# каждым ударом в одно и то же время. Ноль — «погасло», то есть с ударами оно
+# не связано. Порог измерен по группам диагнозов (tools/validate_cases.py).
+P_COUPLING = 0.55
+
+
+def p_coupling(stacks: dict[str, np.ndarray], beats: dict[str, np.ndarray],
+               qrs_on: int, p: tuple[int, int], fs: int,
+               bad: set[str]) -> float | None:
+    """Насколько найденное отклонение связано с комплексом.
+
+    Это главный признак, отличающий зубец P от волн мерцания предсердий, и по
+    среднему комплексу его получить нельзя: и там и там виден горб.
+
+    Зубец P приходит перед каждым ударом в одно и то же время, поэтому при
+    усреднении по ударам он складывается сам с собой и сохраняется целиком.
+    Волны мерцания идут своим чередом, 300-600 в минуту, с ударами не связаны —
+    при усреднении они гасятся как корень из числа ударов. Значит отношение
+    «величина в среднем / средняя величина в отдельных ударах» и есть искомое:
+    около единицы у настоящего зубца, около 1/sqrt(N) у мерцания.
+
+    Меряем среднеквадратичным отклонением, а не размахом: размах у шума смещён
+    вверх (максимум шума всегда положителен), и отношение выходило бы заниженным
+    тем сильнее, чем меньше ударов.
+    """
+    a, b = p
+    vals = []
+    for n, st in stacks.items():
+        if n in bad or n not in beats or st is None or len(st) < 3:
+            continue
+        if b > st.shape[1] or b <= a:
+            continue
+        # Изолиния у каждого удара своя: между ударами линия плывёт, и общий
+        # ноль превратил бы этот дрейф в мнимое отклонение.
+        z0 = max(0, qrs_on - _ms(30, fs))
+        base = np.nanmedian(st[:, z0:max(z0 + 1, qrs_on)], axis=1)
+        seg = st[:, a:b] - base[:, None]
+        with np.errstate(invalid="ignore"):
+            ind = np.sqrt(np.nanmean(seg ** 2, axis=1))
+        ind = ind[np.isfinite(ind)]
+        if not len(ind) or float(np.mean(ind)) < 1e-9:
+            continue
+        avg = float(np.sqrt(np.nanmean((np.nanmean(seg, axis=0)) ** 2)))
+        vals.append(avg / float(np.mean(ind)))
+    return float(np.median(vals)) if vals else None
 
 
 def _baseline(w: np.ndarray, qrs_on: int, fs: int) -> float:
@@ -634,9 +726,9 @@ def measure(sig: np.ndarray, names: list[str], fs: int,
     got = _lead_beats(sig, names, fs, simultaneous)
     if got is None:
         return None
-    beats, r_idx, rr_ms, n_beats = got
+    beats, r_idx, rr_ms, n_beats, stacks = got
     if not simultaneous:
-        beats = _align_by_energy(beats, r_idx, fs)
+        beats = _align_by_energy(beats, r_idx, fs, stacks)
 
     # Недостающие фронтальные достраиваем уже по СОВМЕЩЁННЫМ комплексам I и II.
     # Иначе одно плохо прочитанное отведение от конечностей забирало бы с собой
@@ -689,6 +781,12 @@ def measure(sig: np.ndarray, names: list[str], fs: int,
     mag = p_magnitude(beats, base, fs, bad)
     p = p_bounds(mag, qrs_on, fs, rr_ms) if mag is not None else None
     if p and not p_confirmed(beats, base, p, bad):
+        p = None
+    # Связь с комплексом — последняя и самая строгая проверка. Всё, что выше,
+    # смотрит на средний комплекс, а по нему волны мерцания от зубца P не
+    # отличить: горб виден и там и там.
+    coupling = p_coupling(stacks, beats, qrs_on, p, fs, bad) if p else None
+    if p and coupling is not None and coupling < P_COUPLING:
         p = None
 
     # Конец T ищем по каждому отведению и берём медиану: в отдельном отведении
@@ -772,6 +870,7 @@ def measure(sig: np.ndarray, names: list[str], fs: int,
         "p_ms": p_ms, "pr_ms": pr_ms, "qrs_ms": qrs_ms, "qt_ms": qt_ms,
         "qtc": qc, "axis": ax, "st": st, "amp": amp, "flags": flags,
         "n_beats": n_beats, "misaligned": sorted(bad),
+        "p_coupling": coupling,
         "sokolow": sokolow_lyon(amp),
         "marks": {"p_on": p[0] if p else None, "p_off": p[1] if p else None,
                   "qrs_on": qrs_on, "qrs_off": qrs_off,
