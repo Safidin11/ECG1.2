@@ -33,6 +33,7 @@ from ecg_measure import best_lead, heart_rate         # noqa: E402
 from ecg_delineate import measure                     # noqa: E402
 from ecg_delineate import numbers as measure_numbers  # noqa: E402
 from ecg_card import card as measure_card             # noqa: E402
+from ecg_card import clipboard as measure_json        # noqa: E402
 from oecg_render import FS                            # движок отдаёт 1000 Гц
 
 # --- пороги доверия к разбору ---------------------------------------------
@@ -196,29 +197,37 @@ h1{font-size:23px;font-weight:700;letter-spacing:-.02em}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
   padding:22px;margin-bottom:20px}
 
-.bar-form{display:grid;grid-template-columns:minmax(280px,1fr) 320px 190px;
-  gap:16px;align-items:end}
+/* Блок загрузки: три органа управления в ряд, все одной высоты (--ctl).
+   Раньше высоты гуляли — область для файла 64 px, список 46, кнопка 48, — и
+   ряд выглядел ступеньками. Ширины заданы как «остаток / 300 / 180»: имя
+   выбранного файла бывает длинным, и растягиваться должна именно эта часть. */
+.bar-form{--ctl:56px;display:grid;grid-template-columns:minmax(260px,1fr) 300px 180px;
+  gap:14px;align-items:end}
 @media (max-width:900px){.bar-form{grid-template-columns:1fr}}
-.drop{display:flex;align-items:center;gap:14px;border:2px dashed var(--line);
-  border-radius:12px;padding:15px 18px;cursor:pointer;transition:.15s;background:var(--bg2);
-  min-height:64px}
+.drop{display:flex;align-items:center;gap:13px;border:1.5px dashed var(--line);
+  border-radius:11px;padding:0 16px;cursor:pointer;transition:.15s;background:var(--bg2);
+  height:var(--ctl);overflow:hidden}
 .drop:hover,.drop.over{border-color:var(--acc)}
-.drop svg{opacity:.45;flex:0 0 26px}
-.drop b{display:block;font-size:14.5px;margin-bottom:2px}
-.drop span{color:var(--mut);font-size:12.5px}
+.drop svg{opacity:.45;flex:0 0 24px}
+.drop div{min-width:0}
+.drop b{display:block;font-size:14px;margin-bottom:1px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.drop span{color:var(--mut);font-size:12.5px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;display:block}
 .drop.has{border-style:solid;border-color:var(--acc)}
 input[type=file]{display:none}
 .field{margin:0}
 .field label{display:block;font-size:12.5px;font-weight:600;color:var(--mut);
   margin-bottom:7px}
-select{width:100%;padding:12px 13px;border-radius:10px;border:1px solid var(--line);
+select{width:100%;height:var(--ctl);padding:0 40px 0 14px;border-radius:11px;
+  border:1px solid var(--line);
   background:var(--bg2);color:var(--ink);font-size:14.5px;font-family:inherit;
   cursor:pointer;appearance:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%238b9ab1' stroke-width='1.8' d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
-  background-repeat:no-repeat;background-position:right 14px center}
+  background-repeat:no-repeat;background-position:right 15px center}
 select:focus{outline:none;border-color:var(--acc)}
-button{width:100%;background:var(--acc);color:#04121b;border:0;
-  border-radius:10px;padding:13px;font-size:15px;font-weight:700;cursor:pointer;
+button{width:100%;height:var(--ctl);background:var(--acc);color:#04121b;border:0;
+  border-radius:11px;font-size:15px;font-weight:700;cursor:pointer;
   transition:.15s;font-family:inherit}
 button:hover{filter:brightness(1.08)}
 button:disabled{opacity:.55;cursor:wait}
@@ -262,8 +271,16 @@ figcaption b{color:var(--ink);font-weight:600;font-size:13.5px}
 .note{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--acc);
   border-radius:8px;padding:11px 14px;margin-bottom:18px;font-size:13px;color:var(--mut)}
 .note b{color:var(--ink)}
-.preview{display:none;grid-column:1/-1;margin-top:6px}
-.preview.on{display:block}
+/* Предпросмотр выбранного снимка: полоской, а не во всю страницу. Он нужен,
+   чтобы убедиться «тот файл» и на глаз назвать формат, а для этого хватает
+   уменьшенной копии; во всю ширину она отодвигала кнопку за нижний край. */
+.preview{display:none;grid-column:1/-1;margin-top:4px;gap:14px;align-items:center}
+.preview.on{display:flex}
+.preview .imgbox{flex:0 0 auto;padding:5px}
+.preview img{max-height:132px;width:auto;max-width:100%;border-radius:4px;display:block}
+.preview p{color:var(--mut);font-size:12.5px}
+.preview p b{color:var(--ink)}
+@media (max-width:640px){.preview{flex-direction:column;align-items:stretch}}
 
 details{margin-top:8px}
 summary{cursor:pointer;color:var(--mut);font-size:13px;padding:9px 0;
@@ -279,7 +296,14 @@ summary:hover{color:var(--ink)}
 .alarm{background:color-mix(in srgb,var(--err) 14%,var(--card));
   border:1px solid color-mix(in srgb,var(--err) 45%,transparent);
   border-radius:12px;padding:16px 18px;margin-bottom:18px}
-.alarm>b{display:block;font-size:16px;color:var(--err);margin-bottom:6px}
+.alarm>summary{padding:0;color:inherit;display:block}
+.alarm>summary:hover b{text-decoration:underline}
+.alarm>summary:before{content:"▸";color:var(--err);font-size:15px;
+  float:left;margin:1px 8px 0 0;transition:.15s}
+.alarm[open]>summary:before{transform:rotate(90deg)}
+.alarm[open]>summary{margin-bottom:12px}
+.alarm>summary b,.alarm>b{display:block;font-size:16px;color:var(--err);margin-bottom:3px}
+.alarm>summary span{display:block;color:var(--mut);font-size:13px}
 .alarm>p{color:var(--mut);font-size:13.5px;margin-bottom:10px}
 .alarm ul{list-style:none;display:grid;gap:10px}
 .alarm li{padding-left:16px;border-left:2px solid color-mix(in srgb,var(--err) 45%,transparent)}
@@ -288,11 +312,15 @@ summary:hover{color:var(--ink)}
 .alarm li.warn{border-left-color:color-mix(in srgb,var(--warn) 60%,transparent)}
 .alarm.caution{background:color-mix(in srgb,var(--warn) 12%,var(--card));
   border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
-.alarm.caution>b{color:var(--warn)}
+.alarm.caution>b,.alarm.caution>summary b{color:var(--warn)}
+.alarm.caution>summary:before{color:var(--warn)}
 /* --- карточка измерений ------------------------------------------------- */
-.mrow{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) 150px;gap:12px;
+/* Шесть величин и круг осей. Круг — обычная клетка ряда, поэтому при сужении
+   он переносится вместе со всеми и отдельной вёрстки не требует. */
+.mrow{display:grid;grid-template-columns:repeat(6,minmax(0,1fr)) 172px;gap:12px;
   align-items:stretch;margin-bottom:18px}
-@media (max-width:1250px){.mrow{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:1400px){.mrow{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media (max-width:900px){.mrow{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:760px){.mrow{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .tile{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
 .tile .t{font-size:11.5px;font-weight:700;letter-spacing:.05em;
@@ -313,14 +341,23 @@ summary:hover{color:var(--ink)}
 .tile.high .scale u,.tile.low .scale u{background:var(--warn)}
 .tile .h{font-size:11.5px;color:var(--mut);margin-top:8px;min-height:1.2em}
 .dialbox{background:var(--bg2);border:1px solid var(--line);border-radius:12px;
-  padding:11px;display:grid;place-items:center;text-align:center}
-.dialbox .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums}
-.dialbox .h{font-size:11.5px;color:var(--mut)}
-svg.dial{width:118px;height:118px}
+  padding:11px;display:grid;place-items:center;text-align:center;align-content:center}
+.dialbox .h{font-size:11.5px;color:var(--mut);margin-top:3px}
+/* Легенда трёх осей: цветная точка + величина. Без точек по трём числам не
+   понять, какая стрелка на круге чья. */
+.alegend{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:5px;
+  font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.alegend i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:4px}
+.alegend .vec i{background:var(--acc)}
+.alegend .vecp i{background:var(--acc2)}
+.alegend .vect i{background:var(--warn)}
+svg.dial{width:112px;height:112px}
 svg.dial .norm{fill:color-mix(in srgb,var(--acc) 16%,transparent)}
 svg.dial .ax{stroke:var(--line);stroke-width:1}
 svg.dial .axl{fill:var(--mut);font-size:8.5px;text-anchor:middle;font-weight:600}
 svg.dial .vec{stroke:var(--acc);fill:var(--acc);stroke-width:2.5;stroke-linecap:round}
+svg.dial .vecp{stroke:var(--acc2);fill:var(--acc2);stroke-width:1.6;stroke-linecap:round}
+svg.dial .vect{stroke:var(--warn);fill:var(--warn);stroke-width:1.6;stroke-linecap:round}
 
 /* Двенадцать усреднённых комплексов: 6 в ряд, как в отчёте кардиографа. */
 .beatbox{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;
@@ -366,6 +403,22 @@ svg.dial .vec{stroke:var(--acc);fill:var(--acc);stroke-width:2.5;stroke-linecap:
 .st .up .v{color:var(--err)}
 .st .down{border-color:color-mix(in srgb,var(--acc2) 50%,transparent)}
 .st .down .v{color:var(--acc2)}
+/* JSON для копирования. Свёрнут: он нужен не каждый раз, а развёрнутый на
+   полстраницы отодвигал бы всё остальное. */
+.jsonbox{margin:18px 0 0;border:1px solid var(--line);border-radius:12px;
+  background:var(--bg2);padding:12px 14px}
+.jsonbox>summary{padding:0;font-size:13.5px;font-weight:600;color:var(--ink)}
+.jsonbox[open]>summary{margin-bottom:11px}
+.jhead{display:flex;gap:14px;align-items:center;justify-content:space-between;
+  margin-bottom:10px;flex-wrap:wrap}
+.jhead span{color:var(--mut);font-size:12.5px;flex:1 1 260px}
+button.copy{width:auto;height:auto;flex:0 0 auto;padding:8px 16px;font-size:13px;
+  border-radius:8px}
+button.copy.done{background:var(--acc2)}
+.jsonbox pre{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  background:var(--bg);border:1px solid var(--line);border-radius:9px;
+  padding:12px 14px;max-height:340px;overflow:auto;color:var(--ink);
+  white-space:pre;-webkit-overflow-scrolling:touch}
 .files{font-size:12.5px;color:var(--mut);margin-top:16px;
   padding-top:15px;border-top:1px solid var(--line)}
 .files code{background:var(--bg2);padding:2px 7px;border-radius:5px;
@@ -408,8 +461,10 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     <span>Обрабатываю — обычно 1–2 минуты…</span></div>
 
   <div class=preview id=preview>
-    <figcaption><b>Выбранный снимок</b> — посмотри и определи формат, если авто ошибётся</figcaption>
     <div class=imgbox><img id=previewImg alt="выбранный снимок"></div>
+    <p><b>Выбранный снимок.</b> Посмотри, сколько строк на плёнке, и выбери
+      формат в списке, если авто ошибётся. Плёнка должна быть видна целиком,
+      без сильного наклона; лишние блоки рядом с ней лучше обрезать.</p>
   </div>
 </form>
 
@@ -435,17 +490,24 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
 
   {% if r.problems %}
   {% set red = r.problems | selectattr('level','equalto','red') | list %}
-  <div class="alarm {{'caution' if not red else ''}}">
-    <b>{{'Результату доверять нельзя' if red else 'К результату есть замечания'}}</b>
-    <p>{{'Разбор прошёл, но проверки не пройдены — ниже что именно.' if red
-        else 'Разбор прошёл, проверки пройдены, но есть на что обратить внимание.'}}
-      Картинки показываем, чтобы было видно, где сломалось.</p>
+  {# Заголовок виден всегда, разбор причин — под стрелкой. Прятать целиком
+     нельзя: «доверять нельзя» — это главное, что надо знать о результате.
+     А вот пять абзацев объяснений, зачем нужна сходимость отведений и почему
+     мелкий снимок не спасти растяжкой, нужны не каждый раз. #}
+  <details class="alarm {{'caution' if not red else ''}}">
+    <summary>
+      <b>{{'Результату доверять нельзя' if red else 'К результату есть замечания'}}</b>
+      <span>{{r.problems|length}}
+        {{'замечание' if r.problems|length == 1 else 'замечания' if r.problems|length < 5 else 'замечаний'}}
+        — {{'проверки не пройдены' if red else 'проверки пройдены, но есть на что посмотреть'}},
+        нажми, чтобы прочитать</span>
+    </summary>
     <ul>
       {% for p in r.problems %}
       <li class="{{p.level}}"><b>{{p.what}}</b><br><span>{{p.why}}</span></li>
       {% endfor %}
     </ul>
-  </div>
+  </details>
   {% endif %}
 
   <figure>
@@ -483,7 +545,9 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
     {% endfor %}
     <div class=dialbox>
       {{c.dial|safe}}
-      <div><span class=v>{{c.axis}}</span><div class=h>ось {{c.axis_word}}</div></div>
+      <div class=alegend>{% for a in c.axes %}
+        <span class={{a.cls}}><i></i>{{a.label}} {{a.value}}</span>{% endfor %}</div>
+      <div class=h>ось QRS {{c.axis_word}}</div>
     </div>
   </div>
 
@@ -537,6 +601,19 @@ footer{text-align:center;color:var(--mut);font-size:12.5px;margin-top:32px;line-
   </details>
   {% endif %}
 
+  {% if r.json %}
+  <details class=jsonbox>
+    <summary>Все показатели одним куском — JSON для чата или таблицы</summary>
+    <div class=jhead>
+      <span>Оговорки о надёжности лежат внутри вместе с числами: без них
+        получатель разберёт интервалы как показания прибора и не узнает, что
+        плёнка читалась плохо.</span>
+      <button type=button class=copy id=copyBtn>Скопировать</button>
+    </div>
+    <pre id=jsonText>{{r.json}}</pre>
+  </details>
+  {% endif %}
+
   <div class=files>
     Файлы: <code>output/web/{{r.run}}/</code> — сигнал <code>signal.csv</code>,
     картинка <code>{{'twin.png' if r.twin else 'digital_ecg.png'}}</code>
@@ -569,6 +646,22 @@ document.getElementById('f').onsubmit=()=>{
   const b=document.getElementById('go');
   b.disabled=true;b.textContent='Обрабатываю…';
   document.getElementById('busy').classList.add('on')};
+
+// Копирование JSON. Через clipboard API, а с запасным путём через выделение:
+// clipboard API работает только на https и на localhost, а с телефона в
+// локальной сети страница открывается по http на адрес 192.168.x — там его нет.
+const cp=document.getElementById('copyBtn');
+if(cp) cp.onclick=async()=>{
+  const t=document.getElementById('jsonText').textContent;
+  try{ await navigator.clipboard.writeText(t); }
+  catch(e){
+    const r=document.createRange(); r.selectNodeContents(document.getElementById('jsonText'));
+    const s=getSelection(); s.removeAllRanges(); s.addRange(r);
+    try{ document.execCommand('copy'); }catch(_){}
+  }
+  cp.textContent='Скопировано'; cp.classList.add('done');
+  setTimeout(()=>{cp.textContent='Скопировать';cp.classList.remove('done')},1600);
+};
 </script>
 </div></body></html>
 """
@@ -683,7 +776,23 @@ def digitize_route():
             ensure_ascii=False, indent=2), encoding="utf-8")
 
         resid = check.get("residual")
+        # JSON для копирования: те же числа, но пригодные для другой программы.
+        # Провалы разбора кладём внутрь — иначе получатель разберёт интервалы
+        # как показания прибора, не зная, что плёнка читалась плохо.
+        cj = measure_json(meas, {
+            "layout": layout, "layout_chosen_manually": bool(chosen) or None,
+            # Именно processing_seconds: просто «seconds» получатель прочтёт
+            # как длину записи, а это время разбора снимка.
+            "leads_read": n_leads, "processing_seconds": secs,
+            "px_per_mm_source": (round(min(qual["px_per_mm_source"]), 1)
+                                 if qual and qual.get("px_per_mm_source") else None),
+            "scale_from_calibration_pulse": bool(
+                ((qual or {}).get("pulse") or {}).get("applied")) or None,
+            "lead_consistency_residual": (round(resid, 3) if resid is not None else None),
+            "quality_problems": [p["what"] for p in problems] or None,
+        }, rhythm=hr)
         return _page(sel=chosen, r={"run": run, "layout": layout, "cost": cost,
+                                    "json": cj,
                                     "leads": leads, "n_leads": n_leads, "secs": secs,
                                     "manual": bool(chosen), "upload": src.name, "twin": has_twin, "stages": has_stages,
                                     "filled": filled, "filled_sec": round(filled / 1000.0, 1),

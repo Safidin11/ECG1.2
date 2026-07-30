@@ -27,7 +27,7 @@ FRAG = """<!doctype html><html lang=ru><head><meta charset=utf-8>{{style|safe}}
      широкого экрана задаём принудительно: смотреть надо именно её. -->
 <style>body{width:1500px;zoom:.62}
 .beatbox{grid-template-columns:repeat(6,1fr)!important}
-.mrow{grid-template-columns:repeat(5,minmax(0,1fr)) 150px!important}
+.mrow{grid-template-columns:repeat(6,minmax(0,1fr)) 172px!important}
 .st{grid-template-columns:repeat(12,1fr)!important}</style>
 </head><body><div class=wrap><div class=card>
 <h2 style="margin-bottom:16px">Измерения</h2>

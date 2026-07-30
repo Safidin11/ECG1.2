@@ -16,6 +16,8 @@ Demo-инструмент, НЕ медизделие.
 """
 from __future__ import annotations
 
+import json
+
 import numpy as np
 
 # Развёртка как на настоящей плёнке: 25 мм/с и 10 мм/мВ. Отступать от этого
@@ -30,11 +32,20 @@ LEAD_ORDER = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5
 # «много или мало», не заключением.
 NORMS = {
     "hr": (60, 100, 30, 160, "уд/мин"),
+    # Верхняя граница зубца P — 120 мс: шире считают признаком перегрузки
+    # левого предсердия. Нижней границы у него по сути нет, 80 взято как
+    # разумный низ шкалы, а не как порог болезни.
+    "p_ms": (80, 120, 40, 200, "мс"),
     "pr_ms": (120, 200, 80, 320, "мс"),
     "qrs_ms": (70, 110, 40, 180, "мс"),
     "qtc": (350, 450, 280, 560, "мс"),
     "sokolow": (0, 35, 0, 60, "мм"),
 }
+
+# Цвета осей на круге: комплекс — основной, зубцы P и T — тоньше и бледнее.
+# Все три на одной схеме не для красоты: смысл оси в том, КУДА она смотрит
+# относительно остальных, и расхождение осей P и QRS видно только рядом.
+AXIS_KEYS = (("qrs", "QRS", "vec"), ("p", "P", "vecp"), ("t", "T", "vect"))
 
 # Цвета интервалов на комплексах. Синий — PQ, красный — комплекс, янтарный — QT.
 BANDS = (("p_on", "qrs_on", "pq", "#2563eb", 0.30),
@@ -52,6 +63,7 @@ def tiles(m: dict) -> list[dict]:
     sk = m.get("sokolow")
     items = [
         ("ЧСС", "hr", m.get("hr"), "уд/мин", "по интервалам между комплексами"),
+        ("P", "p_ms", m.get("p_ms"), "мс", "длительность зубца P"),
         ("PQ", "pr_ms", m.get("pr_ms"), "мс", "от начала зубца P до начала комплекса"),
         ("QRS", "qrs_ms", m.get("qrs_ms"), "мс", "длительность комплекса"),
         ("QTc", "qtc", qtc, "мс", "QT с поправкой на частоту, по Базетту"),
@@ -187,11 +199,16 @@ def beats_svg(m: dict) -> tuple[list[dict], float] | None:
     return out, gain
 
 
-def axis_svg(deg: float | None) -> str:
-    """Шестиосевая схема с направлением электрической оси.
+def axis_svg(axes: dict) -> str:
+    """Шестиосевая схема с направлением осей зубца P, комплекса и зубца T.
 
-    Норму (-30..+90) закрашиваем сектором: положение стрелки внутри или вне
-    сектора читается мгновенно, в отличие от числа в градусах.
+    Все три на одной схеме, а не по кругу на каждую. Ось сама по себе — просто
+    число градусов, а смысл её в том, куда она смотрит ОТНОСИТЕЛЬНО остальных:
+    ось зубца T, развернувшаяся от оси комплекса, и ось зубца P, ушедшая из
+    нормального сектора, — это про разные вещи, и увидеть их можно только рядом.
+
+    Норму комплекса (-30..+90) закрашиваем сектором: положение стрелки внутри
+    или вне сектора читается мгновенно, в отличие от числа в градусах.
     """
     R, C = 58.0, 76.0                 # запас до края: подписи осей идут снаружи
     pt = lambda a, r: (C + r * np.cos(np.radians(a)), C + r * np.sin(np.radians(a)))  # noqa: E731
@@ -206,12 +223,16 @@ def axis_svg(deg: float | None) -> str:
         p.append(f'<path class="ax" d="M{x2:.1f} {y2:.1f}L{x1:.1f} {y1:.1f}"/>')
         tx, ty = pt(a, R + 11)
         p.append(f'<text class="axl" x="{tx:.1f}" y="{ty + 3:.1f}">{name}</text>')
-    if deg is not None:
+    # Порядок обратный важности: комплекс рисуем последним, чтобы он лёг поверх.
+    for key, _, cls in reversed(AXIS_KEYS):
+        deg = (axes or {}).get(key)
+        if deg is None:
+            continue
         hx, hy = pt(deg, R - 8)
-        p.append(f'<path class="vec" d="M{C} {C}L{hx:.1f} {hy:.1f}"/>')
-        p.append(f'<circle class="vec" cx="{hx:.1f}" cy="{hy:.1f}" r="3.5"/>')
+        p.append(f'<path class="{cls}" d="M{C} {C}L{hx:.1f} {hy:.1f}"/>')
+        p.append(f'<circle class="{cls}" cx="{hx:.1f}" cy="{hy:.1f}" r="3"/>')
     return (f'<svg class="dial" viewBox="0 0 {2 * C} {2 * C}" role="img" '
-            f'aria-label="электрическая ось">{"".join(p)}</svg>')
+            f'aria-label="электрические оси">{"".join(p)}</svg>')
 
 
 def axis_word(deg: float | None) -> str:
@@ -264,18 +285,107 @@ FLAG_TEXT = {
 }
 
 
+def clipboard(m: dict | None, meta: dict, rhythm: dict | None = None) -> str:
+    """Все показатели одним куском JSON — чтобы отдать другой программе.
+
+    Зачем вообще: числа с карточки полезны не только глазам. Их отдают чату,
+    складывают в таблицу, сверяют с прошлой плёнкой. Пересчитывать их руками с
+    экрана — верный способ ошибиться, а разбирать HTML страницы ради пяти
+    чисел — работа на ровном месте.
+
+    Два решения о содержимом, и оба важнее формата.
+
+    Первое: оговорки лежат ВНУТРИ, рядом с числами. Если отдать чату голые
+    интервалы, он разберёт их как показания прибора и выдаст заключение с той
+    же уверенностью — независимо от того, читалась плёнка чисто или разваливалась.
+    Поэтому в тот же объект кладутся и провалы разбора, и пометки «этому числу
+    верить нельзя», и прямое указание, что это не медизделие. Отбросить их
+    можно, но тогда это уже осознанный выбор читателя, а не наше умолчание.
+
+    Второе: ключи английские. JSON тут читает не человек, а программа, и
+    английские имена показателей ЭКГ — то, на чём написана вся литература.
+    """
+    ms = lambda v: (None if v is None else round(float(v)))          # noqa: E731
+    mv = lambda v: (None if v is None else round(float(v), 3))       # noqa: E731
+    out: dict = {
+        "disclaimer": "ECG1.2 — учебно-демонстрационная оцифровка фотографии "
+                      "ЭКГ. НЕ медицинское изделие, не для диагностики.",
+        "source": {k: v for k, v in meta.items() if v is not None},
+    }
+    if not m:
+        out["measurements"] = None
+        out["unreliable"] = ["измерения не сошлись — разметка комплекса не удалась"]
+        return json.dumps(out, ensure_ascii=False, indent=2)
+
+    qc = m.get("qtc") or {}
+    ax = m.get("axis") or {}
+    sk = m.get("sokolow") or {}
+    # Ровность ритма и наличие зубца P — не украшение, а то, с чего чтение ЭКГ
+    # начинается: «ритм синусовый или нет». Без них по одним интервалам не
+    # отличить синусовый ритм от мерцательной аритмии, и читатель этого даже
+    # не заметит — числа-то будут выглядеть обычно.
+    out["rhythm"] = {"hr_bpm": ms(m.get("hr")), "rr_ms": ms(m.get("rr_ms")),
+                     "P_wave_found": m.get("pr_ms") is not None,
+                     "beats_averaged": m.get("n_beats"),
+                     "leads_measured": m.get("n_leads")}
+    if rhythm:
+        out["rhythm"] |= {"regular": rhythm.get("regular"),
+                          "rr_spread_pct": rhythm.get("spread"),
+                          "beats_counted": rhythm.get("beats")}
+    out["intervals_ms"] = {
+        "P": ms(m.get("p_ms")), "PQ": ms(m.get("pr_ms")),
+        "QRS": ms(m.get("qrs_ms")), "QT": ms(m.get("qt_ms")),
+        "QTc_Bazett": ms(qc.get("bazett")), "QTc_Fridericia": ms(qc.get("fridericia")),
+        "QTc_Framingham": ms(qc.get("framingham")), "QTc_Hodges": ms(qc.get("hodges")),
+    }
+    out["axes_deg"] = {"P": ms(ax.get("p")), "QRS": ms(ax.get("qrs")),
+                       "T": ms(ax.get("t"))}
+    out["sokolow_lyon"] = ({"mm": round(sk["mm"], 1), "S_V1_mm": round(sk["s_v1_mm"], 1),
+                            f"R_{sk['lead']}_mm": round(sk["r_mm"], 1),
+                            "threshold_mm": NORMS["sokolow"][1], "over": sk["over"]}
+                           if sk else None)
+    # Уровень ST в миллиметрах плёнки: пороги, которыми пользуются («подъём на
+    # 1 мм»), заданы в клетках, а не в милливольтах.
+    st = m.get("st") or {}
+    out["ST_mm"] = {n: {"J": mv((st[n].get("j") or 0) * MM_MV) if st[n].get("j") is not None else None,
+                        "J60": mv(st[n]["j60"] * MM_MV) if st[n].get("j60") is not None else None,
+                        "J80": mv(st[n]["j80"] * MM_MV) if st[n].get("j80") is not None else None}
+                    for n in LEAD_ORDER if n in st}
+    amp = m.get("amp") or {}
+    # r и s — самое верхнее и самое нижнее отклонение внутри комплекса. Это НЕ
+    # разбор на зубцы Q, R, S: отрицательное отклонение перед зубцом R (зубец Q,
+    # по которому судят о рубце) и после него (зубец S) здесь не разделены.
+    # Оговорка стоит рядом, чтобы её нельзя было не заметить.
+    out["amplitudes_mV"] = {
+        "_note": "r = наибольшее отклонение вверх внутри комплекса, "
+                 "s = наибольшее вниз (зубцы Q и S не разделены), "
+                 "t = отклонение в вершине зубца T",
+    } | {n: {k: mv(amp[n].get(k)) for k in ("r", "s", "t")}
+         for n in LEAD_ORDER if n in amp}
+    bad = [FLAG_TEXT[f][0] for f in m.get("flags", []) if f in FLAG_TEXT]
+    if m.get("misaligned"):
+        bad.append("отведения не совмещены: " + ", ".join(m["misaligned"]))
+    out["unreliable"] = bad
+    return json.dumps(out, ensure_ascii=False, indent=2)
+
+
 def card(m: dict | None) -> dict | None:
     """Всё, что нужно шаблону страницы."""
     if not m:
         return None
     got = beats_svg(m)
-    ax = (m.get("axis") or {}).get("qrs")
+    axes = m.get("axis") or {}
+    ax = axes.get("qrs")
     return {
         "tiles": tiles(m), "qt_detail": qt_detail(m),
         "beats_svg": got[0] if got else None,
         "gain": (None if not got or got[1] == MM_MV else "1/2"),
-        "dial": axis_svg(ax), "axis": ("—" if ax is None else f"{ax:+.0f}°"),
-        "axis_word": axis_word(ax), "st": st_rows(m),
+        "dial": axis_svg(axes), "axis": ("—" if ax is None else f"{ax:+.0f}°"),
+        "axis_word": axis_word(ax),
+        "axes": [{"label": label, "cls": cls,
+                  "value": ("—" if axes.get(key) is None else f"{axes[key]:+.0f}°")}
+                 for key, label, cls in AXIS_KEYS],
+        "st": st_rows(m),
         "beats": m.get("n_beats"), "leads": m.get("n_leads"),
         "misaligned": m.get("misaligned") or [],
         "flags": [{"title": FLAG_TEXT[f][0], "text": FLAG_TEXT[f][1]}
